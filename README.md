@@ -68,7 +68,23 @@
 
 ## 📸 截图
 
-> TODO: 补充界面截图（建议放 `docs/screenshots/`）
+| 分类浏览 | 放大预览 |
+|---|---|
+| ![分类浏览](docs/screenshots/01-browse.png) | ![放大预览](docs/screenshots/02-preview.png) |
+
+| 文件浏览 | 搜索 |
+|---|---|
+| ![文件浏览](docs/screenshots/03-files.png) | ![搜索](docs/screenshots/04-search.png) |
+
+| 扫描处理 | 重复检测 |
+|---|---|
+| ![扫描处理](docs/screenshots/05-scan.png) | ![重复检测](docs/screenshots/06-dedup.png) |
+
+| 类别管理 | 设置 |
+|---|---|
+| ![类别管理](docs/screenshots/07-categories.png) | ![设置](docs/screenshots/08-settings.png) |
+
+> 完整使用说明见 [docs/使用说明.md](docs/使用说明.md)
 
 ## 🚀 下载与安装
 
