@@ -1,0 +1,75 @@
+{
+  "name": "ppt-nest",
+  "version": "2.4.1",
+  "description": "PPT Nest - 本地化 PPT 素材库管理工具（Electron + FastAPI + SQLite）",
+  "author": "egohug <egohug@126.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/egohuger/ppt-nest#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/egohuger/ppt-nest.git"
+  },
+  "bugs": {
+    "url": "https://github.com/egohuger/ppt-nest/issues"
+  },
+  "keywords": [
+    "ppt",
+    "pptx",
+    "powerpoint",
+    "slide-library",
+    "material-library",
+    "electron",
+    "fastapi",
+    "sqlite",
+    "python"
+  ],
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build:python": "pyinstaller --onefile --name server --hidden-import dedup_worker --distpath dist-python --workpath build-python --specpath build-python backend/server.py",
+    "build": "npm run build:python && electron-builder --win",
+    "build:dir": "npm run build:python && electron-builder --win --dir"
+  },
+  "build": {
+    "appId": "com.pptnest.app",
+    "productName": "PPT Nest",
+    "directories": {
+      "output": "release"
+    },
+    "extraResources": [
+      {
+        "from": "dist-python/server.exe",
+        "to": "backend/server.exe"
+      }
+    ],
+    "files": [
+      "electron/**/*",
+      "frontend/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "PPT Nest"
+    }
+  },
+  "devDependencies": {
+    "electron": "^40.0.0",
+    "electron-builder": "^26.15.3"
+  }
+}

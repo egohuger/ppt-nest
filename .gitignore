@@ -1,0 +1,37 @@
+# ═══ Dependencies ═══
+node_modules/
+
+# ═══ Build outputs ═══
+release/
+dist-python/
+build-python/
+dist/
+*.spec.bak
+build-output.log
+
+# ═══ Public repo staging (不含源码的公开仓库暂存) ═══
+github-public/
+
+# ═══ Python ═══
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ═══ Runtime data (DB / thumbnails / logs) ═══
+data/
+backend/config.json
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.log
+
+# ═══ OS / Editor ═══
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
