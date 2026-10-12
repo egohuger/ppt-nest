@@ -1,6 +1,6 @@
 {
   "name": "ppt-nest",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "description": "PPT Nest - 本地化 PPT 素材库管理工具（Electron + FastAPI + SQLite）",
   "author": "egohug <egohug@126.com>",
   "license": "MIT",
@@ -28,7 +28,9 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "build:python": "pyinstaller --onefile --name server --hidden-import dedup_worker --distpath dist-python --workpath build-python --specpath build-python backend/server.py",
-    "build": "npm run build:python && electron-builder --win",
+    "build:win": "npm run build:python && electron-builder --win",
+    "build:mac": "npm run build:python && electron-builder --mac",
+    "build": "npm run build:win",
     "build:dir": "npm run build:python && electron-builder --win --dir"
   },
   "build": {
@@ -37,20 +39,19 @@
     "directories": {
       "output": "release"
     },
-    "extraResources": [
-      {
-        "from": "dist-python/server.exe",
-        "to": "backend/server.exe"
-      }
-    ],
     "files": [
       "electron/**/*",
       "frontend/**/*",
-      "node_modules/**/*",
       "package.json"
     ],
     "win": {
       "icon": "build/icon.ico",
+      "extraResources": [
+        {
+          "from": "dist-python/server.exe",
+          "to": "backend/server.exe"
+        }
+      ],
       "target": [
         {
           "target": "nsis",
@@ -59,6 +60,30 @@
           ]
         }
       ]
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.productivity",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "extraResources": [
+        {
+          "from": "dist-python/server",
+          "to": "backend/server"
+        }
+      ],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "PPT Nest ${version}"
     },
     "nsis": {
       "oneClick": false,

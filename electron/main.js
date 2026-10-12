@@ -44,22 +44,52 @@ function findPython() {
     const fs = require('fs');
     const cp = require('child_process');
 
-    // 1. Bundled exe (production) — electron-builder extraResources
-    const bundledExe = path.join(process.resourcesPath || '', 'backend', 'server.exe');
+    // 0. 显式指定（开发/绿色版可用 PPTNEST_PYTHON 指到任意解释器或后端二进制）
+    const override = (process.env.PPTNEST_PYTHON || '').trim();
+    if (override && fs.existsSync(override)) {
+        return override;
+    }
+
+    // 1. Bundled backend binary (production) — electron-builder extraResources
+    //    Windows: server.exe   macOS/Linux: server
+    const backendBin = process.platform === 'win32' ? 'server.exe' : 'server';
+    const bundledExe = path.join(process.resourcesPath || '', 'backend', backendBin);
     if (fs.existsSync(bundledExe)) {
         return bundledExe;
     }
 
-    // 2. Locally built exe (dev, via npm run build:python)
-    const localExe = path.join(__dirname, '..', 'dist-python', 'server.exe');
+    // 2. Locally built backend binary (dev, via npm run build:python)
+    const localExe = path.join(__dirname, '..', 'dist-python', backendBin);
     if (fs.existsSync(localExe)) {
         return localExe;
     }
 
-    // 3. Hermes venv Python
+    // 3. Hermes venv Python (Windows only)
     const hermesPy = path.join(process.env.LOCALAPPDATA || '', 'hermes', 'hermes-agent', 'venv', 'Scripts', 'python.exe');
     if (fs.existsSync(hermesPy)) {
         return hermesPy;
+    }
+
+    // 3.5 macOS / Linux: 优先挑真的装了后端依赖的解释器，避免拿到系统 3.9 空环境
+    if (process.platform !== 'win32') {
+        const unixCandidates = [
+            path.join(__dirname, '..', '.venv', 'bin', 'python3'),
+            path.join(process.env.HOME || '', '.local', 'bin', 'python3'),
+            '/opt/homebrew/bin/python3',
+            '/usr/local/bin/python3',
+            '/usr/bin/python3',
+        ];
+        for (const candidate of unixCandidates) {
+            if (!fs.existsSync(candidate)) continue;
+            try {
+                const probe = cp.spawnSync(candidate, ['-c', 'import fastapi, pptx'], {
+                    timeout: 8000,
+                });
+                if (probe.status === 0) return candidate;
+            } catch (e) {
+                continue;
+            }
+        }
     }
 
     // 4. PATH-based Python
@@ -88,11 +118,13 @@ function startPythonBackend() {
         dialog.showErrorBox(
             'Python 环境缺失',
             '未找到可用的 Python 运行环境，后端服务无法启动。\n\n' +
-            '请安装 Python 3.10+ 并加入 PATH，或使用打包版（自带 server.exe）。'
+            (process.platform === 'darwin'
+                ? '请安装 Python 3.10+（brew install python@3.12）并装好 backend/requirements.txt 里的依赖，\n或使用打包版（自带后端，无需 Python）。'
+                : '请安装 Python 3.10+ 并加入 PATH，或使用打包版（自带 server.exe）。')
         );
         return false;
     }
-    const isExe = python.endsWith('.exe') && !python.endsWith('python.exe');
+    const isExe = /^server(\.exe)?$/i.test(path.basename(python));
 
     // Resolve a real, persistent data directory (not inside ASAR)
     const fs = require('fs');
@@ -187,7 +219,7 @@ function stopPythonBackend() {
 
 // ─── Health check ───────────────────────────────────────────────────
 
-function waitForBackend(retries = 30, delay = 500) {
+function waitForBackend(retries = 120, delay = 500) {
     return new Promise((resolve, reject) => {
         let attempts = 0;
         const check = () => {

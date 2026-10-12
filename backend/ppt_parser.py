@@ -1,4 +1,6 @@
 import os
+import sys
+import shutil
 import hashlib
 import logging
 
@@ -145,12 +147,28 @@ def parse_ppt_with_com(file_path):
     return slides_data
 
 
+def parse_ppt_with_libreoffice(file_path):
+    """Parse old .ppt/.pps format on macOS/Linux: LibreOffice 转 pptx 后按 pptx 解析。
+
+    COM 只存在于 Windows；macOS 上没有 PowerPoint 自动化，用 LibreOffice 无头转换替代。
+    """
+    import libreoffice
+
+    converted, tmp_root = libreoffice.convert(file_path, 'pptx')
+    try:
+        return parse_pptx(converted)
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
 def parse_file(file_path):
     ext = os.path.splitext(file_path)[1].lower()
     if ext == '.pptx':
         return parse_pptx(file_path)
-    elif ext == '.ppt':
-        return parse_ppt_with_com(file_path)
+    elif ext in ('.ppt', '.pps'):
+        if sys.platform == 'win32':
+            return parse_ppt_with_com(file_path)
+        return parse_ppt_with_libreoffice(file_path)
     return []
 
 
@@ -164,6 +182,11 @@ def delete_slide_from_file(file_path, slide_number):
         xml_slides.remove(slides[slide_number - 1])
         prs.save(file_path)
     elif ext in ('.ppt', '.pps', '.ppsx'):
+        if sys.platform != 'win32':
+            # COM 只在 Windows 有；LibreOffice 转格式再存回会改变文件格式，不能默默做
+            raise RuntimeError(
+                '删除旧版 .ppt/.pps 里的页面需要 Windows 上的 PowerPoint；'
+                'macOS 上请先另存为 .pptx 再删，或改在 Windows 端操作。')
         from com_utils import powerpoint_app, open_presentation
 
         with powerpoint_app() as ppt_app:

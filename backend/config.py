@@ -11,7 +11,11 @@ def _is_frozen():
 def _default_data_dir():
     """Default data dir before applying env / config overrides."""
     if _is_frozen():
-        # Installed: use %APPDATA% so config + DB survive reinstalls
+        # 打包版：数据放用户级目录，重装/升级不丢
+        if sys.platform == 'darwin':
+            return os.path.expanduser('~/Library/Application Support/PPT Nest')
+        if sys.platform != 'win32':
+            return os.path.expanduser('~/.local/share/PPT Nest')
         base = os.environ.get('APPDATA', '')
         if base:
             return os.path.join(base, 'PPT Nest')
@@ -135,12 +139,17 @@ def get_thumbnail_dir():
 
 def get_default_ppt_folder():
     """Default scan folder for first-run onboarding."""
-    # 1. Slide_home (common material location)
-    slide_home = r'D:\Slide_home'
-    if os.path.isdir(slide_home):
-        return os.path.abspath(slide_home)
+    # 1. Slide_home（素材目录约定；macOS 在 ~/ 或 ~/Documents 下）
+    candidates = [
+        os.path.expanduser('~/Slide_home'),
+        os.path.expanduser('~/Documents/Slide_home'),
+        r'D:\Slide_home',
+    ]
+    for path in candidates:
+        if os.path.isdir(path):
+            return os.path.abspath(path)
     # 2. User Documents
-    docs = os.path.expanduser(r'~\Documents')
+    docs = os.path.expanduser('~/Documents')
     if os.path.isdir(docs):
         return docs
     return os.path.expanduser('~')

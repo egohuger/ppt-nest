@@ -1,4 +1,6 @@
 import os
+import shutil
+import sys
 import logging
 from PIL import Image, ImageDraw, ImageFont
 
@@ -21,6 +23,28 @@ def _fit_to_canvas(img, width, height):
     oy = (height - img.height) // 2
     canvas.paste(img, (ox, oy))
     return canvas
+
+
+def _load_font(size=14):
+    """按平台挑一个能显示中文的字体（占位图上要写中文标题）。
+
+    找不到任何一个就退 Pillow 默认字体（英文可读、中文会变方块），不让它抛异常。
+    """
+    candidates = [
+        '/System/Library/Fonts/PingFang.ttc',          # macOS
+        '/System/Library/Fonts/Hiragino Sans GB.ttc',  # macOS 旧版
+        '/System/Library/Fonts/STHeiti Medium.ttc',    # macOS 兜底
+        'C:/Windows/Fonts/msyh.ttc',                   # Windows 微软雅黑
+        'msyh.ttc',
+        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',  # Linux
+        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+    ]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
 
 
 def generate_thumbnails_com(file_path, output_dir, width=THUMBNAIL_WIDTH,
@@ -61,10 +85,7 @@ def _placeholder(output_path, slide_number, title='',
     if title:
         label += f"\n{title[:30]}"
 
-    try:
-        font = ImageFont.truetype("msyh.ttc", 14)
-    except Exception:
-        font = ImageFont.load_default()
+    font = _load_font(14)
 
     bbox = draw.textbbox((0, 0), label, font=font)
     tx = (width - bbox[2] + bbox[0]) // 2
@@ -74,17 +95,72 @@ def _placeholder(output_path, slide_number, title='',
     return output_path
 
 
+def generate_thumbnails_libreoffice(file_path, output_dir,
+                                    width=THUMBNAIL_WIDTH,
+                                    height=THUMBNAIL_HEIGHT, dpi=150):
+    """Render every slide via headless LibreOffice → PDF → per-page PNG.
+
+    macOS / Linux 上的 PowerPoint 替代方案（需已安装 LibreOffice）。
+    """
+    import libreoffice
+
+    if not libreoffice.is_available():
+        raise RuntimeError(libreoffice.missing_hint())
+
+    import pymupdf
+
+    os.makedirs(output_dir, exist_ok=True)
+    pdf_path, tmp_root = libreoffice.convert(file_path, 'pdf')
+    thumbnails = []
+    try:
+        with pymupdf.open(pdf_path) as doc:
+            for i, page in enumerate(doc, start=1):
+                pix = page.get_pixmap(dpi=dpi, alpha=False)
+                img = Image.frombytes('RGB', (pix.width, pix.height), pix.samples)
+                img = _fit_to_canvas(img, width, height)
+                out_path = os.path.join(output_dir, f"slide_{i}.png")
+                img.save(out_path)
+                thumbnails.append(out_path)
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+    return thumbnails
+
+
+_hint_logged = False
+
+
+def _renderers():
+    """按平台给出真实渲染后端的尝试顺序。"""
+    if sys.platform == 'win32':
+        # Windows：有 Office 就用 COM；没 Office 但装了 LibreOffice 也能出真图
+        return [generate_thumbnails_com, generate_thumbnails_libreoffice]
+    return [generate_thumbnails_libreoffice]
+
+
 def generate_thumbnails(file_path, output_dir, width=THUMBNAIL_WIDTH,
                         height=THUMBNAIL_HEIGHT, slides_data=None):
-    """Generate thumbnails. Uses COM when available, else placeholders.
+    """Generate thumbnails: 真实渲染优先，所有后端都失败才退占位图。
     Pass slides_data (already-parsed slides) to avoid re-parsing on fallback."""
-    try:
-        result = generate_thumbnails_com(file_path, output_dir, width, height)
+    global _hint_logged
+    for renderer in _renderers():
+        try:
+            result = renderer(file_path, output_dir, width, height)
+        except Exception as e:
+            _log.warning("缩略图后端 %s 失败（%s）：%s",
+                         renderer.__name__, os.path.basename(file_path), e)
+            continue
         if result:
             return result
-    except Exception as e:
-        _log.warning("Thumbnail COM failed for %s, using placeholders: %s",
-                     file_path, e)
+
+    # 全后端失败：多数情况是缺渲染引擎（没装 Office / LibreOffice），提示一次
+    if not _hint_logged:
+        try:
+            import libreoffice
+            if not libreoffice.is_available():
+                _log.warning('%s', libreoffice.missing_hint())
+                _hint_logged = True
+        except Exception:
+            pass
 
     # Reuse already-parsed slides when provided to avoid a second parse
     slides = slides_data

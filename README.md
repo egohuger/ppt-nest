@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/平台-Windows%2010%2B-blue" alt="platform">
+  <img src="https://img.shields.io/badge/平台-Windows%2010%2B%20%7C%20macOS%2012%2B-blue" alt="platform">
   <img src="https://img.shields.io/badge/Electron-40-47848F?logo=electron&logoColor=white" alt="electron">
   <img src="https://img.shields.io/badge/后端-FastAPI%2BSQLite-009688?logo=fastapi&logoColor=white" alt="backend">
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="python">
@@ -64,7 +64,7 @@
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-**技术栈**：Electron · FastAPI · SQLite(WAL) · python-pptx · pywin32(COM) · Pillow · rapidfuzz · PyInstaller · electron-builder
+**技术栈**：Electron · FastAPI · SQLite(WAL) · python-pptx · Pillow · rapidfuzz · PyMuPDF · PyInstaller · electron-builder · PowerPoint COM（Windows）/ LibreOffice 无头（macOS/Linux）
 
 **源码结构**：`electron/` 桌面壳 · `frontend/` 前端单页应用 · `backend/` Python 后端 · `build-dist.py` 打包脚本
 
@@ -90,16 +90,29 @@
 
 ## 🚀 下载与安装
 
-到 [Releases](../../releases) 下载 `PPT.Nest.Setup.x.x.x.exe`，双击安装即可。
+### Windows
 
-> 真实缩略图渲染与 .ppt 旧格式解析依赖本机已安装 Microsoft PowerPoint；未安装时仍可正常使用（缩略图为占位图，仅支持 .pptx）。
+到 [Releases](../../releases) 下载 `PPT.Nest.Setup.x.x.x.exe`，双击安装即可（用户级安装，不需要管理员权限）。
+
+- 首次运行若弹「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」（安装包未做代码签名）。
+
+### macOS
+
+到 [Releases](../../releases) 下载 `PPT Nest-x.x.x-arm64.dmg`（Apple 芯片机型），打开后把 `PPT Nest` 拖进「应用程序」。
+
+- 首次打开会被 Gatekeeper 拦下：双击 → 点「完成」→「系统设置 → 隐私与安全性 → 安全性 → 仍要打开」。macOS 15 起右键→打开已失效，只能走这条路。
+- **需要在 macOS 上装 LibreOffice 才能出真实缩略图**（免费，`brew install --cask libreoffice`）；没装时缩略图为占位图，旧版 .ppt 也无法解析。
+
+> 详细的首启处理、平台能力差异、以及两个平台的打包发版流程见 [docs/安装与分发.md](docs/安装与分发.md)。
+
+> 真实缩略图渲染与 .ppt 旧格式解析依赖本机已安装 Microsoft PowerPoint（Windows）或 LibreOffice（macOS/Linux）；未安装时仍可正常使用（缩略图为占位图，仅支持 .pptx）。
 
 > 本仓库提供完整源码（MIT 开源），可自行构建；也可以直接在 Releases 下载安装包使用。
 
 ## ⚙️ 常见问题
 
 **Q: 扫描很慢？**
-A: 瓶颈在 PowerPoint COM 渲染缩略图，每页约 0.5~2 秒属正常。扫描在后台线程运行，可随时取消。
+A: 瓶颈在渲染缩略图。Windows 走 PowerPoint COM，每页约 0.5~2 秒；macOS 走 LibreOffice 无头渲染，实测每页约 0.2~0.3 秒（首次调用要等 LibreOffice 冷启动）。扫描在后台线程运行，可随时取消。
 
 **Q: 大模型归类怎么配置？**
 A: 设置 → 大模型 API 配置，选择提供商（智谱/DeepSeek/通义/Kimi/OpenAI 等）填写 API Key 即可。扫描设置中选择"关键词 + LLM"混合模式，只有关键词拿不准的页面才会调用大模型，省钱省时。
@@ -108,7 +121,10 @@ A: 设置 → 大模型 API 配置，选择提供商（智谱/DeepSeek/通义/Ki
 A: 会从源 PPT 文件中真实删除该页并同步刷新缩略图与页码，操作前请确认源文件未被 Office 打开占用。
 
 **Q: 数据存在哪里？**
-A: 安装版默认在 `%APPDATA%\ppt-nest\data`（可在设置中修改数据目录），包含 SQLite 数据库与缩略图，卸载不丢失。
+A: 安装版默认在 `%APPDATA%\ppt-nest\data`（Windows）或 `~/Library/Application Support/ppt-nest/data`（macOS），可在设置中修改数据目录。目录里是 SQLite 数据库与缩略图，卸载不丢失。
+
+**Q: macOS 上功能有差异吗？**
+A: 只有一处：旧版 `.ppt` 里删除单页需要 Windows 上的 PowerPoint，macOS 上请先另存为 `.pptx` 再删。扫描、搜索、分类、去重、收藏、放大预览、打开源文件两个平台一致。
 
 ## 🐛 反馈问题
 

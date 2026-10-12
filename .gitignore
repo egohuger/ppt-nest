@@ -8,6 +8,8 @@ build-python/
 dist/
 *.spec.bak
 build-output.log
+# macOS 图标中间产物（icon.icns 保留，iconset 不入库）
+build/icon.iconset/
 
 # ═══ Public repo staging (不含源码的公开仓库暂存) ═══
 github-public/
