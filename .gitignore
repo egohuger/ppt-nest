@@ -37,3 +37,9 @@ desktop.ini
 .idea/
 .vscode/
 *.swp
+
+# ═══ 内部开发资料（不对外发布） ═══
+docs/project-memory/
+docs/spike/
+docs/ui-icon-styles/
+docs/竞品功能对照-*.md

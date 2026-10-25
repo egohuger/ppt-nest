@@ -1,6 +1,6 @@
 {
   "name": "ppt-nest",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "description": "PPT Nest - 本地化 PPT 素材库管理工具（Electron + FastAPI + SQLite）",
   "author": "egohug <egohug@126.com>",
   "license": "MIT",
@@ -39,6 +39,14 @@
     "directories": {
       "output": "release"
     },
+    "fileAssociations": [
+      {
+        "ext": ["pptx", "ppt"],
+        "name": "PowerPoint 演示文稿",
+        "description": "PowerPoint 演示文稿",
+        "role": "Viewer"
+      }
+    ],
     "files": [
       "electron/**/*",
       "frontend/**/*",

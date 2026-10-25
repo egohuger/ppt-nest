@@ -10,9 +10,11 @@ macOS 没有 COM，改用 LibreOffice（soffice）无头转换：
 """
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 from logger import get_logger
 
@@ -29,6 +31,16 @@ _SOFFICE_CANDIDATES = [
     '/usr/bin/libreoffice',
     '/snap/bin/libreoffice',
 ]
+
+# 生成 fonts.conf 时列出的字体目录（macOS；不存在的会自动跳过）
+_FONT_DIRS = [
+    '/System/Library/Fonts',
+    '/System/Library/Fonts/Supplemental',
+    '/Library/Fonts',
+    os.path.expanduser('~/Library/Fonts'),
+    '/Applications/LibreOffice.app/Contents/Resources/fonts/truetype',
+]
+_fontconfig_cache = {}
 
 
 def find_soffice():
@@ -68,12 +80,57 @@ def missing_hint():
             'Fedora `sudo dnf install libreoffice`。')
 
 
-def convert(file_path, target='pdf', timeout=DEFAULT_TIMEOUT):
+def _fontconfig_file():
+    """返回给 soffice 用的 fonts.conf 路径（首次调用时生成），失败返回 None。
+
+    macOS 上无头 LibreOffice 走 fontconfig 找字体，而系统没装 fonts.conf，
+    结果只认它自带的那几个拉丁字体：中文全渲染成空心方块（豆腐块）。
+    这里生成一份临时配置显式列出 macOS 的字体目录，仅通过 FONTCONFIG_FILE
+    作用于 soffice 子进程，不改用户/系统的 fontconfig 配置。
+    """
+    if 'path' in _fontconfig_cache:
+        return _fontconfig_cache['path']
+    path = None
+    try:
+        dirs = [d for d in _FONT_DIRS if os.path.isdir(d)]
+        if not dirs:
+            raise RuntimeError('没有找到任何字体目录')
+        cache = os.path.join(tempfile.gettempdir(), 'pptnest_fontconfig_cache')
+        os.makedirs(cache, exist_ok=True)
+        path = os.path.join(tempfile.gettempdir(), 'pptnest_fonts.conf')
+        lines = ['<?xml version="1.0"?>', '<fontconfig>']
+        lines += [f'  <dir>{d}</dir>' for d in dirs]
+        lines.append(f'  <cachedir>{cache}</cachedir>')
+        lines.append('</fontconfig>')
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+        _log.info('已生成字体配置 %s（%d 个字体目录）', path, len(dirs))
+    except Exception as exc:
+        _log.warning('生成字体配置失败，沿用系统默认：%s', exc)
+        path = None
+    _fontconfig_cache['path'] = path
+    return path
+
+
+def _subprocess_env():
+    """子进程环境：macOS 上补 FONTCONFIG_FILE，让 soffice 能看见中文字体。"""
+    env = os.environ.copy()
+    if sys.platform == 'darwin' and not env.get('FONTCONFIG_FILE'):
+        fc = _fontconfig_file()
+        if fc:
+            env['FONTCONFIG_FILE'] = fc
+    return env
+
+
+def convert(file_path, target='pdf', timeout=DEFAULT_TIMEOUT, cancel=None):
     """用无头 LibreOffice 转换文档。
 
     target: LibreOffice 过滤器名，如 'pdf' / 'pptx'。
+    cancel: 可选的回调，返回 True 表示用户已取消 —— 立刻杀掉 soffice 并抛 Interrupted。
     返回 (输出文件路径, 临时根目录)。调用方用完自行 shutil.rmtree(临时根目录)。
     """
+    from interrupt import Interrupted
+
     soffice = find_soffice()
     if not soffice:
         raise RuntimeError(missing_hint())
@@ -98,19 +155,50 @@ def convert(file_path, target='pdf', timeout=DEFAULT_TIMEOUT):
             '--outdir', out_root,
             src,
         ]
+        # 用 Popen 而不是 run：soffice 转换一个几十页的 deck 要几秒到几十秒，
+        # 用户点取消必须马上停 —— 只有自己在轮询里才杀得掉它。
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=_subprocess_env(), start_new_session=True,
+        )
+        deadline = time.time() + timeout
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  timeout=timeout)
-        except subprocess.TimeoutExpired:
+            while True:
+                try:
+                    out, err = proc.communicate(timeout=0.25)
+                    break
+                except subprocess.TimeoutExpired:
+                    if cancel and cancel():
+                        _kill_tree(proc)
+                        raise Interrupted()
+                    if time.time() > deadline:
+                        _kill_tree(proc)
+                        raise RuntimeError(
+                            f'LibreOffice 转换超时（>{timeout}s）：{os.path.basename(src)}')
+        except BaseException:
             shutil.rmtree(out_root, ignore_errors=True)
-            raise RuntimeError(
-                f'LibreOffice 转换超时（>{timeout}s）：{os.path.basename(src)}')
+            raise
 
     if not os.path.exists(expected):
-        detail = (proc.stderr or proc.stdout or '').strip().replace('\n', ' ')
+        detail = ((err or out) or '').strip().replace('\n', ' ')
         shutil.rmtree(out_root, ignore_errors=True)
         raise RuntimeError(
             f'LibreOffice 未产出 {ext} 文件（{os.path.basename(src)}）：{detail[:300]}')
 
     _log.info('LibreOffice 转换完成：%s -> %s', os.path.basename(src), expected)
     return expected, out_root
+
+
+def _kill_tree(proc, wait=3.0):
+    """杀掉 soffice 及其子进程（start_new_session 让它自成进程组）。"""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=wait)
+    except Exception:
+        pass

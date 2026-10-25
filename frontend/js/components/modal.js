@@ -9,13 +9,13 @@ const Modal = {
 
         let html = `<div class="modal-header">`;
         html += `<div class="modal-title">${title}</div>`;
-        html += `<button class="modal-close-btn" onclick="Modal.hide()" title="关闭">&times;</button>`;
+        html += `<button class="modal-close-btn" onclick="Modal.hide()" data-tip="关闭" aria-label="关闭">${icon("x", 16)}</button>`;
         html += `</div>`;
         html += `<div class="modal-body">${contentHtml}</div>`;
         if (actions.length > 0) {
             html += '<div class="modal-actions">';
             for (const a of actions) {
-                const cls = a.primary ? 'btn-primary' : 'btn-secondary';
+                const cls = a.danger ? 'btn-danger' : (a.primary ? 'btn-primary' : 'btn-secondary');
                 html += `<button class="btn ${cls} modal-action-btn" data-action="${a.key || ''}">${a.label}</button>`;
             }
             html += '</div>';

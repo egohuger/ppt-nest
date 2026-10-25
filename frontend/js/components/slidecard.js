@@ -16,12 +16,12 @@ const SlideCard = {
         const { showActions = true } = options;
         const id = slide.id;
         const title = (slide.title || '').substring(0, 40) || `第${slide.slide_number}页`;
-        const source = `📁 ${slide.file_name || ''} · 第${slide.slide_number}页`;
+        const source = `${icon('folder', 12)} ${escapeHtml(slide.file_name || '')} · 第${slide.slide_number}页`;
 
-        let catText = '🏷️ 未分类';
+        let catText = `${icon('tag', 12)} 未分类`;
         if (slide.category_name) {
-            const icons = { auto: '🤖', manual: '👤', llm: '🧠' };
-            catText = `🏷️ ${slide.category_name} ${icons[slide.category_source] || ''}`;
+            const icons = { auto: icon('bot', 12), manual: icon('user', 12), llm: icon('brain', 12) };
+            catText = `${icon('tag', 12)} ${escapeHtml(slide.category_name)} ${icons[slide.category_source] || ''}`;
         }
 
         const uid = ++SlideCard._idCounter;
@@ -62,14 +62,14 @@ const SlideCard = {
                 <div class="slide-thumb">
                     <img src="${thumbUrl}" alt="${escapeHtml(title)}" loading="lazy">
                     <div class="thumb-hover-frame">
-                        <button class="thumb-zoom-icon" data-sc-zoom="${slide.id}" title="放大查看">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                        <button class="thumb-zoom-icon" data-sc-zoom="${slide.id}" data-tip="放大查看" aria-label="放大查看">
+                            ${icon("zoom-in", 16)}
                         </button>
-                        <button class="thumb-collect-icon" data-sc-collect="${slide.id}" data-sc-collected="${starData}" title="收藏">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                        <button class="thumb-collect-icon" data-sc-collect="${slide.id}" data-sc-collected="${starData}" data-tip="收藏到收藏夹" aria-label="收藏到收藏夹">
+                            ${icon("star", 16)}
                         </button>
-                        <button class="thumb-open-icon" data-sc-open="${uid}" title="打开源文件">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+                        <button class="thumb-open-icon" data-sc-open="${uid}" data-tip="打开源文件所在位置" aria-label="打开源文件所在位置">
+                            ${icon("panel-left", 16)}
                         </button>
                     </div>
                 </div>`;
@@ -81,15 +81,15 @@ const SlideCard = {
         html += thumbHtml;
         html += `<div class="slide-info">`;
         html += `<div class="slide-title">${escapeHtml(title)}</div>`;
-        html += `<div class="slide-meta">${escapeHtml(source)}</div>`;
-        html += `<div class="slide-category">${escapeHtml(catText)}</div>`;
+        html += `<div class="slide-meta">${source}</div>`;  // source 内部已做转义，含图标 SVG
+        html += `<div class="slide-category">${catText}</div>`;  // 同上
 
         // Show collection badges
         if (colIds.length > 0) {
             html += '<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:3px;">';
             for (const cid of colIds) {
                 const cname = App._collectionNames && App._collectionNames[cid] || `收藏夹#${cid}`;
-                html += `<span class="tag collection-tag" style="background:var(--warning-light);border-color:#fcd34d;">⭐ ${escapeHtml(cname)}</span>`;
+                html += `<span class="tag collection-tag" style="background:var(--warning-light);border-color:#fcd34d;">${icon('star', 12)} ${escapeHtml(cname)}</span>`;
             }
             html += '</div>';
         }
@@ -97,9 +97,14 @@ const SlideCard = {
         html += '</div>';
 
         if (showActions) {
-            html += `<div style="padding:0 14px 10px;display:flex;gap:4px;flex-wrap:wrap;">`;
-            html += `<button class="btn btn-sm btn-secondary" onclick="App.showSlideEditor(${id})">✏️ 编辑</button>`;
-            html += `<button class="btn btn-sm btn-secondary" onclick="App.confirmDeleteSlide(${id})">🗑️</button>`;
+            html += `<div class="slide-actions">`;
+            html += `<button class="btn btn-sm btn-secondary btn-icon" onclick="App.showSlideEditor(${id})" data-tip="编辑标题与分类" aria-label="编辑标题与分类">`
+                 + `${icon('pencil', 14)}</button>`;
+            html += `<button class="btn btn-sm btn-secondary btn-icon" onclick="App.confirmDeleteSlide(${id})" data-tip="删除这一页" aria-label="删除这一页">`
+                 + `${icon('trash-2', 14)}</button>`;
+            // 加入稿件：主动作，靠右，与编辑/删除同一行
+            html += `<button class="btn btn-sm btn-secondary btn-icon slide-actions-add" data-sc-add="${id}" data-tip="加入稿件" aria-label="加入稿件">`
+                 + `${icon('plus', 14)}</button>`;
             html += '</div>';
         }
 
@@ -110,6 +115,14 @@ const SlideCard = {
 
 // ─── Global Event Delegation ──────────────────────────────────────
 document.addEventListener('click', function(e) {
+    // 加入稿件（浏览 / 搜索 / 收藏夹都能用）
+    const addBtn = e.target.closest('[data-sc-add]');
+    if (addBtn) {
+        e.stopPropagation();
+        App.addSlideToCompose(parseInt(addBtn.getAttribute('data-sc-add')));
+        return;
+    }
+
     // IMPORTANT: check zoom BEFORE open — zoom button is inside the open area
     const zoomBtn = e.target.closest('[data-sc-zoom]');
     if (zoomBtn) {

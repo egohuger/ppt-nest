@@ -16,6 +16,66 @@ let BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
 let mainWindow = null;
 let pythonProcess = null;
 
+// ─── 单实例 + 打开文件（Finder 右键「打开方式」/ 拖 Dock / 命令行带路径） ───
+// 多实例会各起一个后端写同一个 db.sqlite，所以必须先抢单实例锁。
+const OPENABLE_EXT = ['.ppt', '.pptx'];
+const pendingOpenPaths = [];
+let rendererReady = false;
+
+function isOpenablePath(p) {
+    if (!p || typeof p !== 'string') return false;
+    if (p.startsWith('-')) return false;                 // 命令行开关
+    const lower = p.toLowerCase();
+    return OPENABLE_EXT.some(ext => lower.endsWith(ext));
+}
+
+function collectFromArgv(argv) {
+    const out = [];
+    for (const a of argv || []) {
+        if (isOpenablePath(a)) out.push(a);
+    }
+    return out;
+}
+
+function queueOpenPaths(paths) {
+    for (const p of paths || []) {
+        if (!pendingOpenPaths.includes(p)) pendingOpenPaths.push(p);
+    }
+    flushOpenPaths();
+}
+
+function flushOpenPaths() {
+    if (!rendererReady || !mainWindow || mainWindow.isDestroyed() || !pendingOpenPaths.length) return;
+    const batch = pendingOpenPaths.splice(0, pendingOpenPaths.length);
+    try {
+        mainWindow.webContents.send('open-files', batch);
+    } catch (e) {
+        pendingOpenPaths.unshift(...batch);   // 没送出去就留着，下次 ready 再送
+    }
+}
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+    app.quit();
+} else {
+    // Windows：应用已开着时右键「打开方式」，系统会起第二个实例，路径在它的 argv 里
+    app.on('second-instance', (event, argv) => {
+        if (mainWindow) {
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.show();
+            mainWindow.focus();
+        }
+        const paths = collectFromArgv(argv);
+        if (paths.length) queueOpenPaths(paths);
+    });
+}
+
+// macOS：右键「打开方式」/ 把文件拖到 Dock 图标上都走这里，可能早于 whenReady
+app.on('open-file', (event, filePath) => {
+    event.preventDefault();
+    queueOpenPaths([filePath]);
+});
+
 // ─── Port discovery ─────────────────────────────────────────────────
 
 function isPortAvailable(port) {
@@ -282,6 +342,7 @@ function createWindow() {
 
     mainWindow.on('closed', () => {
         mainWindow = null;
+        rendererReady = false;
     });
 }
 
@@ -289,6 +350,12 @@ function createWindow() {
 
 ipcMain.handle('get-backend-url', () => {
     return BACKEND_URL;
+});
+
+// 渲染进程初始化完了：把攒着的「打开文件」请求一次性发过去
+ipcMain.on('renderer-ready', () => {
+    rendererReady = true;
+    flushOpenPaths();
 });
 
 ipcMain.handle('get-data-dir', () => {
@@ -321,6 +388,77 @@ ipcMain.handle('open-url', async (event, url) => {
     } catch (e) {
         console.error('Failed to open URL:', url, e);
         return false;
+    }
+});
+
+// 组稿导出：选保存位置 + 在文件管理器里定位产物
+ipcMain.handle('show-save-dialog', async (event, options = {}) => {
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    const result = await dialog.showSaveDialog(win, {
+        title: options.title || '导出为 PPT',
+        defaultPath: options.defaultPath || '组稿.pptx',
+        filters: [{ name: 'PowerPoint 演示文稿', extensions: ['pptx'] }],
+        properties: ['createDirectory', 'showOverwriteConfirmation'],
+    });
+    if (result.canceled || !result.filePath) return null;
+    return result.filePath;
+});
+
+// 选文件夹（扫描位置用）—— 只返回目录路径，不碰文件内容
+ipcMain.handle('show-open-directory', async (event, options = {}) => {
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    const result = await dialog.showOpenDialog(win, {
+        title: options.title || '选择文件夹',
+        defaultPath: options.defaultPath || undefined,
+        properties: ['openDirectory', 'createDirectory'],
+        buttonLabel: options.buttonLabel || '选这个文件夹',
+    });
+    if (result.canceled || !result.filePaths || !result.filePaths.length) return null;
+    return result.filePaths[0];
+});
+
+// 文件浏览页【打开文件】用：选一个或多个 PPT，返回绝对路径（导入走 /api/import/*）
+ipcMain.handle('show-open-files', async () => {
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    const result = await dialog.showOpenDialog(win, {
+        title: '打开 PPT 文件',
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'PowerPoint 演示文稿', extensions: ['pptx', 'ppt'] }],
+        buttonLabel: '打开并入库',
+    });
+    if (result.canceled || !result.filePaths || !result.filePaths.length) return [];
+    return result.filePaths;
+});
+
+ipcMain.handle('reveal-path', async (event, filePath) => {
+    try {
+        shell.showItemInFolder(filePath);
+        return true;
+    } catch (e) {
+        console.error('Failed to reveal:', filePath, e);
+        return false;
+    }
+});
+
+// 首次引导用：把内置示例 PPT 复制到用户选定的素材根目录
+// 注意：示例文件打在 asar 里，Python 后端子进程读不到 asar，所以由主进程来复制。
+ipcMain.handle('copy-sample-ppt', async (event, destDir) => {
+    const fs = require('fs');
+    const path = require('path');
+    const SAMPLE_NAME = '示例-组织与人力资源体系优化方案.pptx';
+    const src = path.join(__dirname, '..', 'frontend', 'assets', 'sample', SAMPLE_NAME);
+    try {
+        if (!destDir || !fs.existsSync(destDir) || !fs.statSync(destDir).isDirectory()) {
+            return { ok: false, error: '目标文件夹不存在' };
+        }
+        const target = path.join(destDir, SAMPLE_NAME);
+        if (fs.existsSync(target)) {
+            return { ok: true, path: target, existed: true };
+        }
+        fs.copyFileSync(src, target);
+        return { ok: true, path: target, existed: false };
+    } catch (e) {
+        return { ok: false, error: e.message };
     }
 });
 
@@ -358,9 +496,13 @@ app.whenReady().then(async () => {
 
     createWindow();
 
+    // 首次启动就带着文件路径（命令行 / 右键打开）：窗口建好后立刻排进队列
+    queueOpenPaths(collectFromArgv(process.argv.slice(1)));
+
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
             createWindow();
+            queueOpenPaths([]);   // 窗口重建后把待发的文件再冲一次（renderer 会重新 ready）
         }
     });
 });

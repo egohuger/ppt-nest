@@ -2,6 +2,8 @@ import sqlite3
 import json
 import os
 import logging
+import threading
+from contextlib import contextmanager
 
 from config import get_db_path, get_thumbnail_dir
 
@@ -39,6 +41,14 @@ class Database:
         """Build a LIKE pattern with %, _ and \\ escaped (used with ESCAPE '\\')."""
         esc = keyword.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
         return '%' + esc + '%'
+
+    @staticmethod
+    def q_tokens(q):
+        """把搜索词拆成多个关键词：空格（含全角空格）分隔，忽略空项。
+
+        多个关键词之间是 AND —— 一页里每个词都出现才算命中。
+        """
+        return [t for t in (q or '').replace('\u3000', ' ').split() if t]
 
     # ── Schema ──
 
@@ -125,10 +135,63 @@ class Database:
                 UNIQUE(collection_id, slide_id)
             );
 
+            -- 类别级收藏：夹里装的是「分类」本身（点开看这类下面的页）
+            CREATE TABLE IF NOT EXISTS collection_categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                collection_id INTEGER NOT NULL,
+                category_id INTEGER NOT NULL,
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE,
+                UNIQUE(collection_id, category_id)
+            );
+
+            -- 文件级收藏：和 collection_items（页面级）并列，互不混合
+            CREATE TABLE IF NOT EXISTS collection_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                collection_id INTEGER NOT NULL,
+                file_id INTEGER NOT NULL,
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+                FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+                UNIQUE(collection_id, file_id)
+            );
+
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
+
+            -- 导入耗时样本：用来按「本机实际速度」估算，而不是写死一个常量
+            -- （不同电脑的 LibreOffice 启动、磁盘、CPU 差异能到 5-10 倍）
+            CREATE TABLE IF NOT EXISTS perf_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seconds REAL NOT NULL,
+                slides INTEGER NOT NULL DEFAULT 0,
+                engine TEXT,
+                llm INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now','localtime'))
+            );
+
+            -- 手动组页：一份稿件 = 若干页的顺序集合（同一页允许出现多次）
+            CREATE TABLE IF NOT EXISTS compositions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                updated_at TEXT DEFAULT (datetime('now','localtime'))
+            );
+
+            CREATE TABLE IF NOT EXISTS composition_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                comp_id INTEGER NOT NULL,
+                slide_id INTEGER NOT NULL,
+                sort_order INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                FOREIGN KEY (comp_id) REFERENCES compositions(id) ON DELETE CASCADE,
+                FOREIGN KEY (slide_id) REFERENCES slides(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_comp_items ON composition_items(comp_id, sort_order);
 
             CREATE INDEX IF NOT EXISTS idx_slides_file ON slides(file_id);
             CREATE INDEX IF NOT EXISTS idx_slides_hash ON slides(content_hash);
@@ -137,8 +200,22 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_cat_parent ON categories(parent_id);
             CREATE INDEX IF NOT EXISTS idx_col_items_col ON collection_items(collection_id);
             CREATE INDEX IF NOT EXISTS idx_col_items_slide ON collection_items(slide_id);
+            CREATE INDEX IF NOT EXISTS idx_col_cats_col ON collection_categories(collection_id);
+            CREATE INDEX IF NOT EXISTS idx_col_cats_cat ON collection_categories(category_id);
+            CREATE INDEX IF NOT EXISTS idx_col_files_col ON collection_files(collection_id);
+            CREATE INDEX IF NOT EXISTS idx_col_files_file ON collection_files(file_id);
             CREATE INDEX IF NOT EXISTS idx_dm_hidden_slide ON duplicate_members(is_hidden, slide_id);
         ''')
+
+        # 老库补列：骨架标记（组稿可以另存为可复用的「骨架」）
+        cols = [r[1] for r in self.conn.execute('PRAGMA table_info(compositions)').fetchall()]
+        if 'is_template' not in cols:
+            self.conn.execute('ALTER TABLE compositions ADD COLUMN is_template INTEGER DEFAULT 0')
+
+        # 老库补列：收藏夹分两类（slide=页面收藏夹，file=文件收藏夹）
+        ccols = [r[1] for r in self.conn.execute('PRAGMA table_info(collections)').fetchall()]
+        if 'kind' not in ccols:
+            self.conn.execute("ALTER TABLE collections ADD COLUMN kind TEXT DEFAULT 'slide'")
 
         self.conn.commit()
 
@@ -169,10 +246,56 @@ class Database:
             'SELECT * FROM files WHERE file_path = ?', (file_path,)
         ).fetchone()
 
+    # ── 事务：把「一个文件」的所有写入合成一次提交 ──
+
+    @contextmanager
+    def transaction(self):
+        """把一段写操作包成一个事务。
+
+        期间所有 commit 都推迟到退出时一次提交，异常（含用户取消的 Interrupted）
+        时整体回滚 —— 导入被打断时，正在处理的那个文件不会留下半截数据，
+        重扫（changed）被打断时旧版本的数据也会原样回来。
+        只有发起事务的线程受推迟影响，别的线程照常提交。
+        """
+        if getattr(self, '_tx_owner', None) is not None:
+            yield                      # 嵌套调用：交给最外层管
+            return
+
+        real = self.conn
+        owner = threading.get_ident()
+
+        class _Deferred:
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+            def commit(self):
+                if threading.get_ident() != owner:
+                    real.commit()      # 别的线程写完照常落盘
+                # 本线程：推迟到事务结束
+
+        self._tx_owner = owner
+        self.conn = _Deferred()
+        try:
+            yield
+            real.commit()
+        except BaseException:
+            real.rollback()
+            raise
+        finally:
+            self.conn = real
+            self._tx_owner = None
+
     def get_all_files(self):
         return self.conn.execute(
             'SELECT * FROM files ORDER BY file_name'
         ).fetchall()
+
+    def update_file_path(self, file_id, new_path):
+        """文件被移动/改名后只改路径，保留 file_id（缩略图目录按 file_id 命名，不受影响）。"""
+        self.conn.execute(
+            "UPDATE files SET file_path = ?, file_name = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+            (new_path, os.path.basename(new_path), file_id))
+        self.conn.commit()
 
     def get_files_with_counts(self):
         """Return all files with their slide counts."""
@@ -195,6 +318,98 @@ class Database:
     def delete_file_by_path(self, file_path):
         self.conn.execute('DELETE FROM files WHERE file_path = ?', (file_path,))
         self.conn.commit()
+
+    # ── 从素材库移除文件（只删库记录和缩略图，磁盘上的源 PPT 一律不动）──
+
+    def deletion_impact(self, file_ids):
+        """移除前的影响面：多少页、几条归类、落在哪些收藏夹/组稿、几个重复组。
+
+        用 JOIN slides.file_id 而不是把 slide id 塞进 IN(...)，文件页数再多也不会
+        撑爆 SQLite 的变量上限。
+        """
+        ids = [int(i) for i in (file_ids or [])]
+        out = {"files": [], "totals": {
+            "files": 0, "slides": 0, "categorized": 0,
+            "collections": 0, "collection_names": [],
+            "file_collections": 0, "file_collection_names": [],
+            "compositions": 0, "composition_names": [],
+            "dup_groups": 0,
+        }}
+        if not ids:
+            return out
+
+        ph = ','.join('?' * len(ids))
+        files = self.conn.execute(
+            f'''SELECT id, file_name, file_size, total_slides, created_at
+                FROM files WHERE id IN ({ph}) ORDER BY file_name''', ids).fetchall()
+        counts = {r['file_id']: r['n'] for r in self.conn.execute(
+            f'SELECT file_id, COUNT(*) n FROM slides WHERE file_id IN ({ph}) GROUP BY file_id',
+            ids).fetchall()}
+
+        for f in files:
+            out["files"].append({
+                "id": f['id'], "name": f['file_name'], "size": f['file_size'] or 0,
+                "slides": counts.get(f['id'], 0), "created_at": f['created_at'],
+            })
+
+        out["totals"]["files"] = len(files)
+        out["totals"]["slides"] = sum(counts.values())
+        out["totals"]["categorized"] = self.conn.execute(
+            f'''SELECT COUNT(*) c FROM slide_categories sc
+                JOIN slides s ON s.id = sc.slide_id WHERE s.file_id IN ({ph})''',
+            ids).fetchone()['c']
+        cols = self.conn.execute(
+            f'''SELECT c.name AS name, COUNT(*) AS n
+                FROM collection_items ci
+                JOIN slides s ON s.id = ci.slide_id
+                JOIN collections c ON c.id = ci.collection_id
+                WHERE s.file_id IN ({ph})
+                GROUP BY c.id ORDER BY n DESC''', ids).fetchall()
+        out["totals"]["collections"] = sum(r['n'] for r in cols)
+        out["totals"]["collection_names"] = [r['name'] for r in cols]
+        # 文件收藏夹：这几份文件本身被收进了哪些夹
+        fcols = self.conn.execute(
+            f'''SELECT c.name AS name, COUNT(*) AS n
+                FROM collection_files cf
+                JOIN collections c ON c.id = cf.collection_id
+                WHERE cf.file_id IN ({ph})
+                GROUP BY c.id ORDER BY n DESC''', ids).fetchall()
+        out["totals"]["file_collections"] = sum(r['n'] for r in fcols)
+        out["totals"]["file_collection_names"] = [r['name'] for r in fcols]
+        comps = self.conn.execute(
+            f'''SELECT c.name AS name, COUNT(*) AS n
+                FROM composition_items it
+                JOIN slides s ON s.id = it.slide_id
+                JOIN compositions c ON c.id = it.comp_id
+                WHERE s.file_id IN ({ph})
+                GROUP BY c.id ORDER BY n DESC''', ids).fetchall()
+        out["totals"]["compositions"] = sum(r['n'] for r in comps)
+        out["totals"]["composition_names"] = [r['name'] for r in comps]
+        out["totals"]["dup_groups"] = self.conn.execute(
+            f'''SELECT COUNT(DISTINCT dm.group_id) c FROM duplicate_members dm
+                JOIN slides s ON s.id = dm.slide_id WHERE s.file_id IN ({ph})''',
+            ids).fetchone()['c']
+        return out
+
+    def delete_files(self, file_ids):
+        """删掉文件记录；slides / 归类 / 收藏 / 组稿 / 重复组靠外键级联一起清。
+
+        返回实际删掉的文件数和页数。缩略图目录由调用方清理。
+        """
+        ids = [int(i) for i in (file_ids or [])]
+        if not ids:
+            return {"deleted": 0, "slides": 0}
+        ph = ','.join('?' * len(ids))
+        slides = self.conn.execute(
+            f'SELECT COUNT(*) c FROM slides WHERE file_id IN ({ph})', ids).fetchone()['c']
+        cur = self.conn.execute(f'DELETE FROM files WHERE id IN ({ph})', ids)
+        deleted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        # 成员被删空的重复组一并清掉，否则重复检测页会留下空组
+        self.conn.execute(
+            '''DELETE FROM duplicate_groups
+               WHERE id NOT IN (SELECT DISTINCT group_id FROM duplicate_members)''')
+        self.conn.commit()
+        return {"deleted": deleted, "slides": slides}
 
     # ── Slide operations ──
 
@@ -266,15 +481,22 @@ class Database:
         return self.conn.execute(sql).fetchall()
 
     def search_slides(self, keyword, include_hidden=False):
-        pattern = self._like_pattern(keyword)
+        # 多个关键词（空格分隔）之间是 AND
+        tokens = self.q_tokens(keyword) or [keyword]
+        where = ' AND '.join(
+            ["(s.text_content LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\')"] * len(tokens))
+        params = []
+        for t in tokens:
+            pat = self._like_pattern(t)
+            params.extend([pat, pat])
         sql = (
             'SELECT s.*, f.file_name, f.file_path '
             'FROM slides s JOIN files f ON s.file_id = f.id '
-            "WHERE (s.text_content LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\')"
+            'WHERE ' + where
             + self._vis(include_hidden) + ' '
             'ORDER BY f.file_name, s.slide_number'
         )
-        return self.conn.execute(sql, (pattern, pattern)).fetchall()
+        return self.conn.execute(sql, params).fetchall()
 
     def get_slides_filtered(self, category_id=None, include_children=False,
                             collection_id=None, file_id=None, q=None,
@@ -290,11 +512,34 @@ class Database:
         params = []
 
         if collection_id is not None:
-            joins.append(
-                'JOIN collection_items ci ON ci.slide_id = s.id '
-            )
-            wheres.append('ci.collection_id = ?')
-            params.append(collection_id)
+            # 页面收藏夹：夹里的页；文件收藏夹：夹里所有文件的全部页；
+            # 类别收藏夹：夹里那些分类（含子分类）下的所有页
+            kind = self.get_collection_kind(collection_id)
+            if kind == 'category':
+                cat_ids = [r['category_id'] for r in self.conn.execute(
+                    'SELECT category_id FROM collection_categories WHERE collection_id = ?',
+                    (collection_id,)).fetchall()]
+                expanded = []
+                for cid in cat_ids:
+                    expanded.extend(self.get_all_descendant_ids(cid))
+                if not expanded:
+                    wheres.append('0 = 1')
+                else:
+                    ph = ','.join('?' * len(expanded))
+                    wheres.append(
+                        f's.id IN (SELECT slide_id FROM slide_categories WHERE category_id IN ({ph}))')
+                    params.extend(expanded)
+            elif kind == 'file':
+                wheres.append(
+                    's.file_id IN (SELECT file_id FROM collection_files WHERE collection_id = ?)'
+                )
+                params.append(collection_id)
+            else:
+                joins.append(
+                    'JOIN collection_items ci ON ci.slide_id = s.id '
+                )
+                wheres.append('ci.collection_id = ?')
+                params.append(collection_id)
 
         if category_id is not None and category_id != -1:
             if include_children:
@@ -321,9 +566,11 @@ class Database:
             params.append(file_id)
 
         if q:
-            wheres.append("(s.title LIKE ? ESCAPE '\\' OR s.text_content LIKE ? ESCAPE '\\')")
-            pattern = self._like_pattern(q)
-            params.extend([pattern, pattern])
+            # 空格分隔的多个关键词：每个词都要命中（标题或正文），即 AND
+            for tok in self.q_tokens(q):
+                wheres.append("(s.title LIKE ? ESCAPE '\\' OR s.text_content LIKE ? ESCAPE '\\')")
+                pat = self._like_pattern(tok)
+                params.extend([pat, pat])
 
         sql = base_select + ''.join(joins)
         if wheres:
@@ -501,9 +748,13 @@ class Database:
             ids.extend(self.get_all_descendant_ids(child['id']))
         return ids
 
-    def get_category_tree(self, parent_id=None, max_depth=5):
+    def get_category_tree(self, parent_id=None, max_depth=5, with_members=False):
         """Return the full category tree as nested dicts. max_depth guards infinite loops.
-        Uses batch COUNT queries instead of per-node N+1."""
+        Uses batch COUNT queries instead of per-node N+1.
+
+        with_members=True 时每个节点额外带 slide_ids / collection_ids，
+        供导出→导入往返时把页面归属与类别收藏夹成员一起恢复。
+        """
         if max_depth <= 0:
             return []
 
@@ -536,6 +787,15 @@ class Database:
         for r in count_rows:
             direct_counts[r['category_id']] = r['cnt']
 
+        members_map, coll_map = {}, {}
+        if with_members:
+            for r in self.conn.execute(
+                    'SELECT category_id, slide_id FROM slide_categories'):
+                members_map.setdefault(r['category_id'], []).append(r['slide_id'])
+            for r in self.conn.execute(
+                    'SELECT category_id, collection_id FROM collection_categories'):
+                coll_map.setdefault(r['category_id'], []).append(r['collection_id'])
+
         def _cumulative_count(cat_id, visited=None):
             """Recursively compute cumulative slide count (including descendants)."""
             if visited is None:
@@ -566,14 +826,20 @@ class Database:
                     'slide_count': cumulative_cnt,
                     'direct_count': direct_cnt,
                     'children': children,
+                    **({'slide_ids': members_map.get(cid, []),
+                        'collection_ids': coll_map.get(cid, [])} if with_members else {}),
                 })
             return result
 
         return _build_nodes(parent_id, 0)
 
-    def import_category_tree(self, data, parent_id=None, sort_order=0):
+    def import_category_tree(self, data, parent_id=None, sort_order=0, restore_members=False):
         """Import a category tree from JSON.
-        data: list of {name, keywords, children?} dicts — supports arbitrary depth."""
+        data: list of {name, keywords, children?} dicts — supports arbitrary depth.
+
+        restore_members=True 时按节点里的 slide_ids / collection_ids 恢复页面归属与
+        类别收藏夹成员（slide id 与 collection id 在导入过程中不变，可直接回填）。
+        """
         imported = 0
         for i, item in enumerate(data):
             cid = self.add_category(
@@ -583,9 +849,26 @@ class Database:
                 sort_order=sort_order + i,
             )
             imported += 1
+            if restore_members:
+                for sid in item.get('slide_ids') or []:
+                    try:
+                        self.conn.execute(
+                            'INSERT OR IGNORE INTO slide_categories (slide_id, category_id) VALUES (?,?)',
+                            (int(sid), cid))
+                    except Exception:
+                        pass
+                for col in item.get('collection_ids') or []:
+                    try:
+                        self.conn.execute(
+                            'INSERT OR IGNORE INTO collection_categories (collection_id, category_id) VALUES (?,?)',
+                            (int(col), cid))
+                    except Exception:
+                        pass
+                self.conn.commit()
             if item.get('children'):
                 imported += self.import_category_tree(
-                    item['children'], parent_id=cid, sort_order=0)
+                    item['children'], parent_id=cid, sort_order=0,
+                    restore_members=restore_members)
         return imported
 
     def get_category_by_id(self, cat_id):
@@ -831,6 +1114,30 @@ class Database:
 
     # ── Settings ──
 
+    # ── 导入耗时样本（估算用）──
+
+    def add_perf_sample(self, seconds, slides, engine='render', llm=0):
+        """记一条真实导入耗时，只留最近 120 条。"""
+        try:
+            self.conn.execute(
+                "INSERT INTO perf_samples (seconds, slides, engine, llm) VALUES (?,?,?,?)",
+                (round(float(seconds), 3), int(slides or 0), engine, 1 if llm else 0))
+            self.conn.execute(
+                "DELETE FROM perf_samples WHERE id NOT IN "
+                "(SELECT id FROM perf_samples ORDER BY id DESC LIMIT 120)")
+            self.conn.commit()
+        except Exception as e:
+            _log.debug('add_perf_sample failed: %s', e)
+
+    def get_perf_samples(self, limit=60):
+        try:
+            rows = self.conn.execute(
+                "SELECT seconds, slides, engine, llm FROM perf_samples ORDER BY id DESC LIMIT ?",
+                (int(limit),)).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
     def get_setting(self, key, default=None):
         row = self.conn.execute(
             'SELECT value FROM settings WHERE key = ?', (key,)).fetchone()
@@ -887,26 +1194,46 @@ class Database:
     # ── Export / Import ──
 
     def export_category_tree(self):
-        """Export all categories as a tree JSON ready for re-import."""
-        return self.get_category_tree(parent_id=None)
+        """Export all categories as a tree JSON ready for re-import.
+
+        with_members=True：带上每类的页面归属（slide_ids）与类别收藏夹成员
+        （collection_ids），导入时一起恢复，否则导出→导入一圈会把归属清空。
+        """
+        return self.get_category_tree(parent_id=None, with_members=True)
 
     def reset_all_categories(self):
         """Delete all categories and their slide assignments."""
+        self.conn.execute('DELETE FROM collection_categories')
         self.conn.execute('DELETE FROM slide_categories')
         self.conn.execute('DELETE FROM categories')
         self.conn.commit()
 
     # ── Collections ──
 
-    def get_collections(self):
-        """Return all collections with slide counts."""
-        return self.conn.execute('''
-            SELECT c.*, COUNT(ci.id) AS slide_count
+    def get_collections(self, kind=None):
+        """所有收藏夹。kind='slide' 页面收藏夹 / 'file' 文件收藏夹 / None 全部。
+
+        slide_count = 夹里的页数；file_count = 夹里的文件数（文件收藏夹只看它）。
+        """
+        sql = '''
+            SELECT c.*,
+                   (SELECT COUNT(*) FROM collection_items ci WHERE ci.collection_id = c.id) AS slide_count,
+                   (SELECT COUNT(*) FROM collection_files cf WHERE cf.collection_id = c.id) AS file_count,
+                   (SELECT COUNT(*) FROM collection_categories cc WHERE cc.collection_id = c.id) AS category_count
             FROM collections c
-            LEFT JOIN collection_items ci ON c.id = ci.collection_id
-            GROUP BY c.id
-            ORDER BY c.sort_order, c.created_at
-        ''').fetchall()
+        '''
+        params = []
+        if kind:
+            sql += " WHERE COALESCE(c.kind,'slide') = ?"
+            params.append(kind)
+        sql += ' ORDER BY c.sort_order, c.created_at'
+        return self.conn.execute(sql, params).fetchall()
+
+    def get_collection_kind(self, col_id):
+        row = self.conn.execute(
+            "SELECT COALESCE(kind,'slide') AS kind FROM collections WHERE id = ?",
+            (col_id,)).fetchone()
+        return row['kind'] if row else None
 
     def get_collection_counts(self):
         """Return {collection_id: slide_count} map."""
@@ -916,9 +1243,11 @@ class Database:
         ''').fetchall()
         return {r['collection_id']: r['cnt'] for r in rows}
 
-    def create_collection(self, name):
+    def create_collection(self, name, kind='slide'):
+        if kind not in ('slide', 'file', 'category'):
+            kind = 'slide'
         cur = self.conn.execute(
-            'INSERT INTO collections (name) VALUES (?)', (name,))
+            'INSERT INTO collections (name, kind) VALUES (?, ?)', (name, kind))
         self.conn.commit()
         return cur.lastrowid
 
@@ -929,6 +1258,8 @@ class Database:
 
     def delete_collection(self, col_id):
         self.conn.execute('DELETE FROM collection_items WHERE collection_id = ?', (col_id,))
+        self.conn.execute('DELETE FROM collection_files WHERE collection_id = ?', (col_id,))
+        self.conn.execute('DELETE FROM collection_categories WHERE collection_id = ?', (col_id,))
         self.conn.execute('DELETE FROM collections WHERE id = ?', (col_id,))
         self.conn.commit()
 
@@ -961,6 +1292,72 @@ class Database:
             (slide_id,)).fetchall()
         return [r['collection_id'] for r in rows]
 
+    # ── 类别级收藏（collection_categories）──
+
+    def add_category_to_collection(self, col_id, category_id):
+        try:
+            self.conn.execute(
+                'INSERT OR IGNORE INTO collection_categories (collection_id, category_id) VALUES (?,?)',
+                (col_id, category_id))
+            self.conn.commit()
+            return True
+        except Exception:
+            return False
+
+    def remove_category_from_collection(self, col_id, category_id):
+        self.conn.execute(
+            'DELETE FROM collection_categories WHERE collection_id = ? AND category_id = ?',
+            (col_id, category_id))
+        self.conn.commit()
+
+    def get_category_collections(self, category_id):
+        rows = self.conn.execute(
+            'SELECT collection_id FROM collection_categories WHERE category_id = ?',
+            (category_id,)).fetchall()
+        return [r['collection_id'] for r in rows]
+
+    def get_categories_by_collection(self, col_id):
+        return self.conn.execute(
+            '''SELECT c.* FROM collection_categories cc
+               JOIN categories c ON c.id = cc.category_id
+               WHERE cc.collection_id = ?
+               ORDER BY cc.created_at DESC, c.name''',
+            (col_id,)).fetchall()
+
+    # ── 文件级收藏（collection_files）──
+
+    def add_file_to_collection(self, col_id, file_id):
+        try:
+            self.conn.execute(
+                'INSERT OR IGNORE INTO collection_files (collection_id, file_id) VALUES (?,?)',
+                (col_id, file_id))
+            self.conn.commit()
+            return True
+        except Exception:
+            return False
+
+    def remove_file_from_collection(self, col_id, file_id):
+        self.conn.execute(
+            'DELETE FROM collection_files WHERE collection_id = ? AND file_id = ?',
+            (col_id, file_id))
+        self.conn.commit()
+
+    def get_file_collections(self, file_id):
+        """这个文件被收进了哪些收藏夹。"""
+        rows = self.conn.execute(
+            'SELECT collection_id FROM collection_files WHERE file_id = ?',
+            (file_id,)).fetchall()
+        return [r['collection_id'] for r in rows]
+
+    def get_files_by_collection(self, col_id):
+        rows = self.conn.execute(
+            '''SELECT f.* FROM collection_files cf
+                JOIN files f ON f.id = cf.file_id
+                WHERE cf.collection_id = ?
+                ORDER BY cf.created_at DESC, f.file_name''',
+            (col_id,)).fetchall()
+        return rows
+
     def get_slides_by_collection(self, col_id, include_hidden=False):
         sql = (
             'SELECT s.*, f.file_name, f.file_path '
@@ -972,6 +1369,121 @@ class Database:
             'ORDER BY ci.created_at DESC, f.file_name, s.slide_number'
         )
         return self.conn.execute(sql, (col_id,)).fetchall()
+
+    # ── 手动组页（compositions）─────────────────────────────────
+
+    def create_composition(self, name):
+        cur = self.conn.execute('INSERT INTO compositions (name) VALUES (?)', (name,))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_compositions(self):
+        return self.conn.execute(
+            'SELECT c.*, (SELECT COUNT(*) FROM composition_items i WHERE i.comp_id = c.id) AS item_count '
+            'FROM compositions c WHERE COALESCE(c.is_template, 0) = 0 ORDER BY c.id DESC'
+        ).fetchall()
+
+    # ── 骨架（模板）：一种特殊组稿，只当样板看，不出现在普通组稿下拉里 ──
+
+    def list_templates(self):
+        return self.conn.execute(
+            'SELECT c.*, (SELECT COUNT(*) FROM composition_items i WHERE i.comp_id = c.id) AS item_count '
+            'FROM compositions c WHERE COALESCE(c.is_template, 0) = 1 ORDER BY c.id DESC'
+        ).fetchall()
+
+    def set_composition_template(self, comp_id, flag=1):
+        self.conn.execute(
+            "UPDATE compositions SET is_template = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+            (1 if flag else 0, comp_id))
+        self.conn.commit()
+
+    def get_template_pages(self, comp_id):
+        """骨架里的页：带上原始来源，供按标题找相似页。"""
+        return self.conn.execute(
+            'SELECT i.slide_id, i.sort_order, s.title, s.text_content, '
+            '       s.slide_number, f.file_name, f.file_path '
+            'FROM composition_items i '
+            'JOIN slides s ON i.slide_id = s.id '
+            'JOIN files f ON s.file_id = f.id '
+            'WHERE i.comp_id = ? ORDER BY i.sort_order, i.id',
+            (comp_id,)).fetchall()
+
+    def rename_composition(self, comp_id, name):
+        self.conn.execute(
+            "UPDATE compositions SET name = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+            (name, comp_id))
+        self.conn.commit()
+
+    def delete_composition(self, comp_id):
+        self.conn.execute('DELETE FROM compositions WHERE id = ?', (comp_id,))
+        self.conn.commit()
+
+    def get_composition_items(self, comp_id):
+        """按 sort_order 返回稿件里的页，带来源信息（含 thumbnail_path 相对路径）。"""
+        return self.conn.execute(
+            'SELECT i.id AS item_id, i.slide_id, i.sort_order, '
+            '       s.title, s.slide_number, s.thumbnail_path, '
+            '       f.id AS file_id, f.file_name, f.file_path '
+            'FROM composition_items i '
+            'JOIN slides s ON i.slide_id = s.id '
+            'JOIN files f ON s.file_id = f.id '
+            'WHERE i.comp_id = ? ORDER BY i.sort_order, i.id',
+            (comp_id,)).fetchall()
+
+    def get_composition(self, comp_id):
+        comp = self.conn.execute(
+            'SELECT * FROM compositions WHERE id = ?', (comp_id,)).fetchone()
+        if not comp:
+            return None, []
+        return comp, self.get_composition_items(comp_id)
+
+    def _rewrite_order(self, comp_id, item_ids):
+        for idx, item_id in enumerate(item_ids):
+            self.conn.execute(
+                'UPDATE composition_items SET sort_order = ? WHERE id = ? AND comp_id = ?',
+                (idx, item_id, comp_id))
+        self.conn.execute(
+            "UPDATE compositions SET updated_at = datetime('now','localtime') WHERE id = ?",
+            (comp_id,))
+        self.conn.commit()
+
+    def add_composition_item(self, comp_id, slide_id, after_index=None):
+        """after_index：插到第 N 项之后（0 基，None=追加到末尾）。返回新 item_id。"""
+        exists = self.conn.execute(
+            'SELECT 1 FROM slides WHERE id = ?', (slide_id,)).fetchone()
+        if not exists:
+            raise ValueError(f'页不存在：{slide_id}')
+        cur = self.conn.execute(
+            'INSERT INTO composition_items (comp_id, slide_id, sort_order) VALUES (?,?,?)',
+            (comp_id, slide_id, 999999))
+        new_id = cur.lastrowid
+        self.conn.commit()
+
+        current = [r['item_id'] for r in self.conn.execute(
+            'SELECT id AS item_id FROM composition_items WHERE comp_id = ? ORDER BY sort_order, id',
+            (comp_id,)).fetchall() if r['item_id'] != new_id]
+        pos = len(current) if after_index is None else max(0, min(int(after_index), len(current)))
+        current.insert(pos, new_id)
+        self._rewrite_order(comp_id, current)
+        return new_id
+
+    def reorder_composition_items(self, comp_id, item_ids):
+        owned = {r['item_id'] for r in self.conn.execute(
+            'SELECT id AS item_id FROM composition_items WHERE comp_id = ?',
+            (comp_id,)).fetchall()}
+        ordered = [int(i) for i in item_ids if int(i) in owned]
+        # 前端没提交到的项按原顺序补到末尾，避免丢页
+        rest = [i for i in (r['item_id'] for r in self.conn.execute(
+            'SELECT id AS item_id FROM composition_items WHERE comp_id = ? ORDER BY sort_order, id',
+            (comp_id,)).fetchall()) if i not in ordered]
+        self._rewrite_order(comp_id, ordered + rest)
+        return len(ordered)
+
+    def remove_composition_item(self, comp_id, item_id):
+        self.conn.execute(
+            'DELETE FROM composition_items WHERE id = ? AND comp_id = ?',
+            (item_id, comp_id))
+        self.conn.commit()
 
     def close(self):
         self.conn.close()

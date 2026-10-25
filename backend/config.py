@@ -163,3 +163,67 @@ def resolve_ppt_folder(db):
     default = get_default_ppt_folder()
     db.set_setting('ppt_folder', default)
     return default
+
+
+def resolve_scan_roots(db):
+    """扫描位置（可以配多个）。
+
+    老库里只有 ppt_folder 一个路径，第一次读时自动转成一个 scan_roots 位置，
+    之后以 scan_roots 为准；ppt_folder 保留作为兼容字段。
+    """
+    raw = db.get_setting('scan_roots')
+    roots = []
+    if raw:
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            data = []
+        if isinstance(data, str):
+            data = [{'path': data}]
+        for item in data or []:
+            if isinstance(item, str):
+                item = {'path': item}
+            if not isinstance(item, dict):
+                continue
+            path = (item.get('path') or '').strip()
+            if not path:
+                continue
+            roots.append({
+                'path': os.path.abspath(os.path.expanduser(path)),
+                'enabled': bool(item.get('enabled', True)),
+            })
+    if not roots:
+        legacy = db.get_setting('ppt_folder')
+        base = legacy if (legacy and os.path.isdir(legacy)) else get_default_ppt_folder()
+        roots = [{'path': os.path.abspath(base), 'enabled': True}]
+        db.set_setting('scan_roots', json.dumps(roots, ensure_ascii=False))
+    return roots
+
+
+def effective_scan_roots(roots):
+    """去掉被其它启用位置包含的嵌套位置。
+
+    父目录递归扫描已经覆盖子目录，两个位置同时启用会让同一个文件进两次队列
+    （一轮导入里被写一遍再删一遍重建）。返回 (生效位置, 被覆盖的嵌套位置)。
+    配置本身不改，用户把父目录关掉后子目录会重新生效。
+    """
+    enabled = [r['path'] for r in roots if r.get('enabled')]
+    effective, nested = [], []
+    for path in enabled:
+        real = os.path.realpath(path)
+        covered = False
+        for other in enabled:
+            if other == path:
+                continue
+            oreal = os.path.realpath(other)
+            if oreal == real:
+                # 完全相同的两个位置：只留第一个
+                if enabled.index(other) < enabled.index(path):
+                    covered = True
+                    break
+                continue
+            if real.startswith(oreal.rstrip(os.sep) + os.sep):
+                covered = True
+                break
+        (nested if covered else effective).append(path)
+    return effective, nested

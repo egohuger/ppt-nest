@@ -39,9 +39,10 @@
 | 🏷️ 智能归类 | 关键词加权打分（标题 ×2、正文 ×1、路径 ×0.6）+ N 级子类级联；支持智谱 / DeepSeek / 通义 / OpenAI 等任意 OpenAI 兼容大模型兜底 |
 | 🔁 重复检测 | 内容哈希精确去重 + n-gram 预筛 + fuzz 相似度检测（可调阈值），独立子进程运行不卡界面 |
 | ⭐ 收藏夹 | 跨文件挑选页面组成自己的专题合集 |
-| 🔍 全文搜索 | 标题 + 正文 LIKE 检索，支持按分类/文件/收藏夹筛选 |
+| 🔍 页面搜索 | 在分类浏览 / 文件浏览里按标题 + 正文检索当前范围，多关键词 AND |
 | 🗂️ 多级分类 | 最多 5 级分类树，支持 JSON 一键导入/导出（附 AI 生成分类体系的提示词模板） |
 | 🔍 放大预览 | 键盘 ← → 翻页浏览，可直接打开对应源 PPT |
+| 📤 组稿导出 | 手动挑页 + 拖拽排序，把多份 PPT 里的页面拼成一份新文件；同源页 100% 保真，跨源自动降级 |
 
 ## 🏗️ 架构
 
@@ -74,17 +75,17 @@
 |---|---|
 | ![分类浏览](docs/screenshots/01-browse.png) | ![放大预览](docs/screenshots/02-preview.png) |
 
-| 文件浏览 | 搜索 |
+| 文件浏览 | 类别管理 |
 |---|---|
-| ![文件浏览](docs/screenshots/03-files.png) | ![搜索](docs/screenshots/04-search.png) |
+| ![文件浏览](docs/screenshots/03-files.png) | ![类别管理](docs/screenshots/07-categories.png) |
 
 | 扫描处理 | 重复检测 |
 |---|---|
 | ![扫描处理](docs/screenshots/05-scan.png) | ![重复检测](docs/screenshots/06-dedup.png) |
 
-| 类别管理 | 设置 |
+| 组稿导出 | 设置 |
 |---|---|
-| ![类别管理](docs/screenshots/07-categories.png) | ![设置](docs/screenshots/08-settings.png) |
+| ![组稿导出](docs/screenshots/09-compose.png) | ![设置](docs/screenshots/08-settings.png) |
 
 > 完整使用说明见 [docs/使用说明.md](docs/使用说明.md)
 
@@ -145,9 +146,9 @@ A: 只有一处：旧版 `.ppt` 里删除单页需要 Windows 上的 PowerPoint�
 <table>
   <tr>
     <td align="center">
-      <img src="docs/wechat-qrcode.png" width="200" alt="公众号：岱森LIVE">
-      <br><strong>公众号「岱森LIVE」</strong>
-      <br>人、AI、效率、社会
+      <img src="docs/wechat-qrcode.png" width="200" alt="公众号：岱森驻场">
+      <br><strong>公众号「岱森驻场」</strong>
+      <br>拥抱奇点，与硅基灵魂共舞
     </td>
     <td align="center">
       <br><br>
@@ -179,10 +180,10 @@ PPT Nest 由个人开发者利用业余时间持续打磨。如果它帮你节�
 
 - ⭐ **点个星标**：这是对我最大的鼓励，也能帮更多人发现它
 - ☕ **请我喝杯咖啡**：微信赞赏 `egohughu`，你的支持是我持续迭代的动力
-- 📢 **关注公众号「岱森LIVE」**：聚焦 **人、AI、效率、社会**，分享效率工具、AI 实践与方法论思考
+- 📢 **关注公众号「岱森驻场」**：拥抱奇点，与硅基灵魂共舞，分享 AI 实践、效率工具与方法论思考
 
 <p align="center">
-  <img src="docs/wechat-qrcode.png" width="240" alt="公众号：岱森LIVE">
+  <img src="docs/wechat-qrcode.png" width="240" alt="公众号：岱森驻场">
 </p>
 
 <p align="center"><strong>如果 PPT Nest 对你有帮助，请点个 ⭐ 星标，让更多人找到它！</strong></p>

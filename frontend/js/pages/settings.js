@@ -40,35 +40,41 @@ const SettingsPage = {
 
         const s = this.settings;
 
-        // 获取应用版本号（用于帮助与反馈）
+        // 获取应用版本号（用于帮助与反馈）：优先走 Electron，网页预览时退回后端 /api/health
         this.appVersion = '';
         try {
             if (window.electronAPI && window.electronAPI.getAppVersion) {
                 this.appVersion = await window.electronAPI.getAppVersion();
             }
         } catch (e) { /* ignore */ }
+        if (!this.appVersion) {
+            try {
+                const h = await fetch(API.baseUrl + '/api/health').then(r => r.json());
+                this.appVersion = (h && h.version) || '';
+            } catch (e) { /* ignore */ }
+        }
 
         // ═══════════ Storage paths (collapsible) ═══════════
         const showP = this.showPaths;
         html += '<div class="card mb-4">';
         html += `<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="SettingsPage.showPaths=!SettingsPage.showPaths;App.navigate('settings');">`;
-        html += '<span>💾 存储路径</span>';
-        html += `<span class="chevron-arrow${showP ? ' expanded' : ''}" style="color:var(--text-tertiary);"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>`;
+        html += `<span>${icon('folder-tree', 16)} 存储路径</span>`;
+        html += `<span class="chevron-arrow${showP ? ' expanded' : ''}" style="color:var(--text-tertiary);">${icon('chevron-down', 12)}</span>`;
         html += '</div>';
         if (showP) {
             html += '<div style="padding:12px 0;">';
             html += `<div class="form-group"><label class="form-label">数据目录</label><input type="text" class="form-input" id="set-data-dir" value="${escapeHtml(s.data_dir)}"></div>`;
             html += `<div class="form-hint">数据库：${escapeHtml(s.db_path)}</div>`;
             html += `<div class="form-hint">缩略图：${escapeHtml(s.thumbnail_dir)}</div>`;
-            html += `<div class="form-hint" style="margin-top:4px;">PPT 文件夹及其他扫描设置在 <a href="#" onclick="App.navigate('scan');return false;" style="color:var(--accent);">扫描处理</a> 页面配置</div>`;
-            html += '<button class="btn btn-primary mt-4" onclick="SettingsPage.savePaths()">💾 保存路径</button>';
+            html += `<div class="form-hint" style="margin-top:4px;">PPT 文件夹及其他入库设置在 <a href="#" onclick="App.navigate('scan');return false;" style="color:var(--accent);">素材入库</a> 页面配置</div>`;
+            html += `<button class="btn btn-primary mt-4" onclick="SettingsPage.savePaths()">${icon('save', 14)} 保存路径</button>`;
             html += '</div>';
         }
         html += '</div>';
 
         // ═══════════ LLM API ═══════════
         html += '<div class="card mb-4">';
-        html += '<div class="card-header">🧠 大模型 API 配置</div>';
+        html += `<div class="card-header">${icon('brain', 16)} 大模型 API 配置</div>`;
         html += '<div style="padding:12px 0;">';
 
         // Resolve current provider defaults
@@ -91,30 +97,30 @@ const SettingsPage = {
         // Model name (pre-filled from provider)
         html += `<div class="form-group"><label class="form-label">模型名称</label><input type="text" class="form-input" id="set-model-name" value="${escapeHtml(s.model_name || curProv.model)}" placeholder="模型标识或名称"></div>`;
 
-        html += '<button class="btn btn-primary" onclick="SettingsPage.saveLLM()">💾 保存 API 配置</button>';
+        html += `<button class="btn btn-primary" onclick="SettingsPage.saveLLM()">${icon('save', 14)} 保存 API 配置</button>`;
         html += '</div>';
         html += '</div>';
 
         // ═══════════ Support / Donate ═══════════
         html += '<div class="card mb-4">';
-        html += '<div class="card-header">☕ 支持作者</div>';
+        html += `<div class="card-header">${icon('coffee', 16)} 支持作者</div>`;
         html += '<div style="padding:12px 0;line-height:1.9;">';
-        html += '<div style="margin-bottom:12px;">如果 PPT Nest 帮你节省了时间，欢迎请作者喝杯咖啡、关注公众号，你的支持是我持续迭代的动力。</div>';
+        html += '<div style="margin-bottom:12px;color:var(--text-secondary);font-size:13px;">如果 PPT Nest 帮你节省了时间，欢迎请作者喝杯咖啡、关注公众号，你的支持是我持续迭代的动力。</div>';
         html += '<div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap;">';
 
         // ── QR 1: 赞赏码 ──
         html += '<div style="text-align:center;">';
         html += '<img src="donate-qrcode.png" alt="打赏二维码" style="width:150px;height:150px;border-radius:8px;border:1px solid var(--border);object-fit:cover;" onerror="this.style.display=\'none\';document.getElementById(\'donate-fallback\').style.display=\'flex\';">';
         html += '<div id="donate-fallback" style="display:none;width:150px;height:150px;border-radius:8px;border:1px dashed var(--border);color:var(--text-tertiary);font-size:12px;align-items:center;justify-content:center;">暂无打赏二维码</div>';
-        html += '<div style="margin-top:6px;font-size:13px;font-weight:600;">☕ 打赏支持</div>';
+        html += `<div style="margin-top:6px;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:4px;">${icon('coffee', 13)} 打赏支持</div>`;
         html += '<div style="font-size:12px;color:var(--text-tertiary);">微信赞赏 <span style="user-select:all;">egohughu</span></div>';
         html += '</div>';
 
         // ── QR 2: 公众号 ──
         html += '<div style="text-align:center;">';
         html += '<img src="wechat-qrcode.png" alt="公众号二维码" style="width:150px;height:150px;border-radius:8px;border:1px solid var(--border);object-fit:cover;">';
-        html += '<div style="margin-top:6px;font-size:13px;font-weight:600;">📢 关注公众号</div>';
-        html += '<div style="font-size:12px;color:var(--text-tertiary);">岱森LIVE · 人、AI、效率、社会</div>';
+        html += `<div style="margin-top:6px;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:4px;">${icon('qr-code', 13)} 关注公众号</div>`;
+        html += '<div style="font-size:12px;color:var(--text-tertiary);">岱森驻场 · 拥抱奇点，与硅基灵魂共舞</div>';
         html += '</div>';
 
         html += '</div>';
@@ -124,24 +130,23 @@ const SettingsPage = {
 
         // ═══════════ Contact / About ═══════════
         html += '<div class="card mb-4">';
-        html += '<div class="card-header">📮 联系我</div>';
+        html += `<div class="card-header">${icon('mail', 16)} 联系我</div>`;
         html += '<div style="padding:12px 0;line-height:1.9;">';
-        html += '<div>📧 邮箱：<a href="mailto:egohug@126.com" style="color:var(--accent);">egohug@126.com</a></div>';
-        html += '<div>💬 微信：<span style="user-select:all;">egohughu</span>（欢迎交流反馈）</div>';
+        html += `<div>${icon('mail', 14)} 邮箱：<a href="mailto:egohug@126.com" style="color:var(--accent);">egohug@126.com</a></div>`;
         html += '</div>';
         html += '</div>';
 
         // ═══════════ Help & Feedback ═══════════
         const verTxt = this.appVersion ? `当前版本 <strong>v${escapeHtml(this.appVersion)}</strong> · ` : '';
         html += '<div class="card mb-4">';
-        html += '<div class="card-header">🛟 帮助与反馈</div>';
+        html += `<div class="card-header">${icon('life-buoy', 16)} 帮助与反馈</div>`;
         html += '<div style="padding:12px 0;">';
         html += `<div style="margin-bottom:12px;color:var(--text-secondary);font-size:13px;">${verTxt}喜欢 PPT Nest？给我们点亮一颗星，或告诉我们哪里可以更好。</div>`;
         html += '<div class="btn-row">';
-        html += '<button class="btn btn-primary" onclick="SettingsPage.openRepo()">⭐ 点亮 Star</button>';
-        html += '<button class="btn btn-secondary" onclick="SettingsPage.openReleases()">📦 检查更新</button>';
-        html += '<button class="btn btn-secondary" onclick="SettingsPage.openBugReport()">🐛 反馈 Bug</button>';
-        html += '<button class="btn btn-secondary" onclick="SettingsPage.openMailFeedback()">📧 邮件反馈</button>';
+        html += `<button class="btn btn-primary" onclick="SettingsPage.openRepo()">${icon('star', 14)} 点亮 Star</button>`;
+        html += `<button class="btn btn-secondary" onclick="SettingsPage.openReleases()">${icon('package', 14)} 检查更新</button>`;
+        html += `<button class="btn btn-secondary" onclick="SettingsPage.openBugReport()">${icon('bug', 14)} 反馈 Bug</button>`;
+        html += `<button class="btn btn-secondary" onclick="SettingsPage.openMailFeedback()">${icon('mail', 14)} 邮件反馈</button>`;
         html += '</div>';
         html += '<div style="margin-top:10px;color:var(--text-tertiary);font-size:12px;">在 GitHub 仓库页点击 <strong>Watch → Custom → Releases</strong>，新版本发布时即可收到通知。</div>';
         html += '</div>';
@@ -149,8 +154,8 @@ const SettingsPage = {
 
         // ═══════════ Danger zone ═══════════
         html += '<div class="card" style="border-color:var(--danger);">';
-        html += '<div class="card-header" style="color:var(--danger);">⚠️ 危险操作</div>';
-        html += '<button class="btn btn-danger" onclick="SettingsPage.clearAll()">🗑️ 清空所有数据</button>';
+        html += `<div class="card-header" style="color:var(--danger);">${icon('triangle-alert', 16)} 危险操作</div>`;
+        html += `<button class="btn btn-danger" onclick="SettingsPage.clearAll()">${icon('trash-2', 14)} 清空所有数据</button>`;
         html += '</div>';
 
         return html;
@@ -195,7 +200,7 @@ const SettingsPage = {
     },
 
     async clearAll() {
-        Modal.confirm('⚠️ 清空所有数据', '此操作不可逆！确定要删除所有数据吗？', async () => {
+        Modal.confirm(`${icon('triangle-alert', 18)} 清空所有数据`, '此操作不可逆！确定要删除所有数据吗？', async () => {
             await API.clearAll();
             Toast.success('全部数据已清空');
             App.navigate('settings');
@@ -227,7 +232,7 @@ const SettingsPage = {
             '**复现步骤**：\n1. \n\n' +
             '**期望行为**：\n\n\n' +
             '**实际行为**：\n\n\n' +
-            '**日志信息**：\n（日志位于「设置 → 存储路径」所示数据目录下的 pptnest.log，可粘贴相关片段）\n'
+            '**日志信息**：\n（日志位于【设置】>【存储路径】所示数据目录下的 pptnest.log，可粘贴相关片段）\n'
         );
         this.openUrl(this.GITHUB_REPO + '/issues/new?labels=bug&title=' + title + '&body=' + body);
     },

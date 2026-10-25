@@ -48,9 +48,10 @@ def _load_font(size=14):
 
 
 def generate_thumbnails_com(file_path, output_dir, width=THUMBNAIL_WIDTH,
-                            height=THUMBNAIL_HEIGHT):
+                            height=THUMBNAIL_HEIGHT, cancel=None, page_cb=None):
     """Export all slides as PNG thumbnails via PowerPoint COM."""
     from com_utils import powerpoint_app, open_presentation
+    from interrupt import Interrupted
 
     os.makedirs(output_dir, exist_ok=True)
     thumbnails = []
@@ -58,7 +59,13 @@ def generate_thumbnails_com(file_path, output_dir, width=THUMBNAIL_WIDTH,
     try:
         with powerpoint_app() as ppt_app:
             with open_presentation(ppt_app, file_path, read_only=True) as pres:
-                for i in range(1, pres.Slides.Count + 1):
+                total_pages = pres.Slides.Count
+                if page_cb:
+                    try: page_cb(0, total_pages)
+                    except Exception: pass
+                for i in range(1, total_pages + 1):
+                    if cancel and cancel():
+                        raise Interrupted()
                     out_path = os.path.join(output_dir, f"slide_{i}.png")
                     pres.Slides(i).Export(out_path, "PNG")
                     try:
@@ -68,6 +75,11 @@ def generate_thumbnails_com(file_path, output_dir, width=THUMBNAIL_WIDTH,
                     except Exception:
                         pass
                     thumbnails.append(out_path)
+                    if page_cb:
+                        try: page_cb(i, total_pages)
+                        except Exception: pass
+    except Interrupted:
+        raise
     except Exception as e:
         _log.error("COM thumbnail error for %s: %s", file_path, e)
 
@@ -97,12 +109,15 @@ def _placeholder(output_path, slide_number, title='',
 
 def generate_thumbnails_libreoffice(file_path, output_dir,
                                     width=THUMBNAIL_WIDTH,
-                                    height=THUMBNAIL_HEIGHT, dpi=150):
+                                    height=THUMBNAIL_HEIGHT, dpi=150, cancel=None,
+                                    page_cb=None):
     """Render every slide via headless LibreOffice → PDF → per-page PNG.
 
     macOS / Linux 上的 PowerPoint 替代方案（需已安装 LibreOffice）。
+    cancel: 传进来就能在转换中去掉 soffice、在逐页渲染中提前停。
     """
     import libreoffice
+    from interrupt import Interrupted
 
     if not libreoffice.is_available():
         raise RuntimeError(libreoffice.missing_hint())
@@ -110,17 +125,26 @@ def generate_thumbnails_libreoffice(file_path, output_dir,
     import pymupdf
 
     os.makedirs(output_dir, exist_ok=True)
-    pdf_path, tmp_root = libreoffice.convert(file_path, 'pdf')
+    pdf_path, tmp_root = libreoffice.convert(file_path, 'pdf', cancel=cancel)
     thumbnails = []
     try:
         with pymupdf.open(pdf_path) as doc:
+            total_pages = doc.page_count
+            if page_cb:
+                try: page_cb(0, total_pages)
+                except Exception: pass
             for i, page in enumerate(doc, start=1):
+                if cancel and cancel():
+                    raise Interrupted()
                 pix = page.get_pixmap(dpi=dpi, alpha=False)
                 img = Image.frombytes('RGB', (pix.width, pix.height), pix.samples)
                 img = _fit_to_canvas(img, width, height)
                 out_path = os.path.join(output_dir, f"slide_{i}.png")
                 img.save(out_path)
                 thumbnails.append(out_path)
+                if page_cb:
+                    try: page_cb(i, total_pages)
+                    except Exception: pass
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
     return thumbnails
@@ -138,19 +162,30 @@ def _renderers():
 
 
 def generate_thumbnails(file_path, output_dir, width=THUMBNAIL_WIDTH,
-                        height=THUMBNAIL_HEIGHT, slides_data=None):
+                        height=THUMBNAIL_HEIGHT, slides_data=None, cancel=None,
+                        page_cb=None):
     """Generate thumbnails: 真实渲染优先，所有后端都失败才退占位图。
-    Pass slides_data (already-parsed slides) to avoid re-parsing on fallback."""
+    Pass slides_data (already-parsed slides) to avoid re-parsing on fallback.
+    cancel 命中时抛 Interrupted（占位图阶段也会先检查一次）。
+    page_cb(done, total) 每渲染完一页回调一次，用来按页显示进度。"""
     global _hint_logged
+    from interrupt import Interrupted
+
     for renderer in _renderers():
         try:
-            result = renderer(file_path, output_dir, width, height)
+            result = renderer(file_path, output_dir, width, height, cancel=cancel,
+                              page_cb=page_cb)
+        except Interrupted:
+            raise
         except Exception as e:
             _log.warning("缩略图后端 %s 失败（%s）：%s",
                          renderer.__name__, os.path.basename(file_path), e)
             continue
         if result:
             return result
+
+    if cancel and cancel():
+        raise Interrupted()
 
     # 全后端失败：多数情况是缺渲染引擎（没装 Office / LibreOffice），提示一次
     if not _hint_logged:

@@ -18,13 +18,13 @@ const Paginator = {
         }
 
         let html = '<div class="paginator">';
-        html += `<button ${currentPage <= 1 ? 'disabled' : ''} data-page="${currentPage - 1}">‹</button>`;
+        html += `<button ${currentPage <= 1 ? 'disabled' : ''} data-page="${currentPage - 1}" data-tip="上一页" aria-label="上一页">${icon('chevron-left', 15)}</button>`;
         for (const p of pages) {
             html += `<button class="${p === currentPage ? 'active' : ''}" data-page="${p}">${p}</button>`;
         }
-        html += `<button ${currentPage >= totalPages ? 'disabled' : ''} data-page="${currentPage + 1}">›</button>`;
+        html += `<button ${currentPage >= totalPages ? 'disabled' : ''} data-page="${currentPage + 1}" data-tip="下一页" aria-label="下一页">${icon('chevron-right', 15)}</button>`;
         if (totalPages > 10) {
-            html += `<input type="number" min="1" max="${totalPages}" value="${currentPage}" data-jump="true" style="margin-left:8px;width:50px;" title="跳转到">`;
+            html += `<input type="number" min="1" max="${totalPages}" value="${currentPage}" data-jump="true" style="margin-left:8px;width:50px;" data-tip="输入页码后回车跳转" aria-label="跳转到指定页">`;
             html += `<button class="btn btn-sm btn-secondary" data-go="true" style="margin-left:4px;">跳转</button>`;
         }
         html += `<span style="margin-left:8px;font-size:12px;color:var(--text-tertiary);">共 ${totalPages} 页</span>`;

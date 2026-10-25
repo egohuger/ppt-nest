@@ -40,7 +40,9 @@ const API = (() => {
             clearTimeout(timer);
             if (!res.ok) {
                 const err = await res.json().catch(() => ({ detail: res.statusText }));
-                throw new Error(err.detail || `HTTP ${res.status}`);
+                const e = new Error(err.detail || `HTTP ${res.status}`);
+                e.status = res.status;
+                throw e;
             }
             return res.json();
         } catch (e) {
@@ -58,6 +60,8 @@ const API = (() => {
 
         // Files
         getFiles: () => request('GET', '/api/files'),
+        filesImpact: (fileIds) => request('POST', '/api/files/impact', { file_ids: fileIds }),
+        filesDelete: (fileIds) => request('POST', '/api/files/delete', { file_ids: fileIds }),
 
         // Slides
         getSlides: (params = {}) => request('GET', '/api/slides', null, params),
@@ -83,7 +87,7 @@ const API = (() => {
 
         // Collections
         getCollections: () => request('GET', '/api/collections'),
-        createCollection: (name) => request('POST', '/api/collections', { name }),
+        createCollection: (name, kind = 'slide') => request('POST', '/api/collections', { name, kind }),
         renameCollection: (id, name) => request('PUT', `/api/collections/${id}`, { name }),
         deleteCollection: (id) => request('DELETE', `/api/collections/${id}`),
         addToCollection: (colId, slideId) =>
@@ -91,12 +95,34 @@ const API = (() => {
         removeFromCollection: (colId, slideId) =>
             request('DELETE', `/api/collections/${colId}/slides/${slideId}`),
 
+        // 文件级收藏（文件收藏夹）
+        getCollectionFiles: (colId) => request('GET', `/api/collections/${colId}/files`),
+        addFileToCollection: (colId, fileId) =>
+            request('POST', `/api/collections/${colId}/files`, { file_id: fileId }),
+        removeFileFromCollection: (colId, fileId) =>
+            request('DELETE', `/api/collections/${colId}/files/${fileId}`),
+        getFileCollections: (fileId) => request('GET', `/api/files/${fileId}/collections`),
+
+        // 类别级收藏（类别收藏夹）
+        getCollectionCategories: (colId) => request('GET', `/api/collections/${colId}/categories`),
+        addCategoryToCollection: (colId, categoryId) =>
+            request('POST', `/api/collections/${colId}/categories`, { category_id: categoryId }),
+        removeCategoryFromCollection: (colId, categoryId) =>
+            request('DELETE', `/api/collections/${colId}/categories/${categoryId}`),
+        getCategoryCollections: (categoryId) => request('GET', `/api/categories/${categoryId}/collections`),
+
         // Scan
         scanCheck: () => request('GET', '/api/scan/check'),
-        scanProcess: () => request('POST', '/api/scan/process', null, null, 300000),
+        scanDiscover: (roots = null) => request('POST', '/api/scan/discover', roots ? { roots } : {}),
+        scanProcess: (paths = null) => request('POST', '/api/scan/process', paths ? { paths } : {}, null, 300000),
         scanProgress: () => request('GET', '/api/scan/progress'),
+        // 右键「打开方式」带进来的文件：先 check 再按需导入
+        importCheck: (paths) => request('POST', '/api/import/check', { paths }),
+        importFiles: (paths, classify = false) =>
+            request('POST', '/api/import/files', { paths, classify }, null, 600000),
         scanCancel: () => request('POST', '/api/scan/cancel'),
-        scanCleanup: () => request('POST', '/api/scan/cleanup'),
+        scanCleanup: (paths = null) => request('POST', '/api/scan/cleanup', paths ? { paths } : {}),
+        updateScanRoots: (roots) => request('PUT', '/api/scan/roots', { roots }),
         updateScanSettings: (s) => request('PUT', '/api/scan/settings', null, s),
 
         // Dedup
@@ -119,6 +145,27 @@ const API = (() => {
         getSettings: () => request('GET', '/api/settings'),
         updateSettings: (settings) => request('PUT', '/api/settings', settings),
 
+        // 组稿（手动拼页）
+        composeList: () => request('GET', '/api/compose'),
+        composeCreate: (name) => request('POST', '/api/compose', { name }),
+        composeGet: (id) => request('GET', `/api/compose/${id}`),
+        composeRename: (id, name) => request('PUT', `/api/compose/${id}`, { name }),
+        composeDelete: (id) => request('DELETE', `/api/compose/${id}`),
+        composeAddItem: (id, slideId, afterIndex = null) =>
+            request('POST', `/api/compose/${id}/items`, { slide_id: slideId, after_index: afterIndex }),
+        composeReorder: (id, ids) => request('PUT', `/api/compose/${id}/items/order`, { ids }),
+        composeRemoveItem: (id, itemId) => request('DELETE', `/api/compose/${id}/items/${itemId}`),
+        composeExport: (id, outputPath, replacements = null) =>
+            request('POST', `/api/compose/${id}/export`,
+                { output_path: outputPath, replacements: replacements || [] }, null, 60000),
+        composePreflight: (id) => request('GET', `/api/compose/${id}/preflight`),
+        composeTemplates: () => request('GET', '/api/compose/templates'),
+        composeFromTemplate: (templateId, name = null) =>
+            request('POST', '/api/compose/templates/from', { template_id: templateId, name }, null, 120000),
+        composeMarkTemplate: (id, isTemplate = true) =>
+            request('POST', `/api/compose/${id}/template`, { is_template: !!isTemplate }),
+        composeExportProgress: () => request('GET', '/api/compose/export/progress'),
+
         // LLM
         llmClassify: () => request('POST', '/api/llm/classify'),
         llmAbsorbKeywords: () => request('POST', '/api/llm/absorb-keywords'),
@@ -130,6 +177,8 @@ const API = (() => {
         fixThumbnails: () => request('POST', '/api/fix-thumbnails'),
         openFile: (path) => request('POST', '/api/open-file', null, { path }),
         firstRun: () => request('GET', '/api/first-run'),
+        completeOnboarding: () => request('POST', '/api/onboarding/complete'),
+        resetOnboarding: () => request('POST', '/api/onboarding/reset'),
 
         // Thumbnail URL helper
         thumbUrl: (relPath) => relPath ? `${BASE_URL}/api/thumbnail/${relPath}` : null,

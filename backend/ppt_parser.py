@@ -57,6 +57,35 @@ class PartialParseError(Exception):
         self.slides_data = slides_data
 
 
+def count_slides_fast(file_path):
+    """快速数页数，不解析内容。
+
+    .pptx / .pptm 直接读包里的 presentation.xml，数 sldIdLst 里真正挂在根元素下的
+    sldId —— 毫秒级，用来在导入前算出总页数（进度条按页走）。
+    不能用「整个文件里 sldId 出现几次」：带 AlternateContent 的 deck 会写两份
+    （Choice + Fallback），数出来正好翻倍。老 .ppt 二进制要转换才知道，返回 None。
+    """
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext not in ('.pptx', '.pptm'):
+        return None
+    try:
+        with zipfile.ZipFile(file_path) as z:
+            xml = z.read('ppt/presentation.xml')
+        root = ET.fromstring(xml)
+        ns_p = '{http://schemas.openxmlformats.org/presentationml/2006/main}'
+        lst = root.find(ns_p + 'sldIdLst')      # 只认根元素下的那个
+        if lst is None:
+            return None
+        n = len(list(lst.findall(ns_p + 'sldId')))
+        return n if n > 0 else None
+    except Exception as e:
+        _log.debug('count_slides_fast failed for %s: %s', file_path, e)
+        return None
+
+
 def parse_pptx(file_path):
     """Parse a .pptx file using python-pptx. Returns list of slide dicts.
     Raises PartialParseError if the file was only partially parsed."""
