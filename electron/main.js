@@ -218,6 +218,8 @@ function startPythonBackend() {
     // In dev mode (non-packaged), let the backend use the project-relative 'data'
     // directory so thumbnails generated during standalone runs are found.
     const env = { ...process.env };
+    // 后端在打包后读不到 package.json（PyInstaller 里 __file__ 指向临时目录），把版本号带过去
+    env.PPTNEST_APP_VERSION = app.getVersion();
     if (app.isPackaged) {
         env.PPTNEST_DATA_DIR = resolvedDataDir;
         // Base dir = where the override config.json must be persisted,

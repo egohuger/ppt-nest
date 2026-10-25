@@ -36,7 +36,14 @@ from config import get_data_dir, set_data_dir, get_db_path, get_thumbnail_dir, g
 from llm_classifier import batch_llm_classify
 
 def _app_version():
-    """版本号单一来源：安装包的 package.json（打包/开发都是它）。读不到退回 0.0.0。"""
+    """版本号单一来源：安装包的 package.json；Electron 会额外传 PPTNEST_APP_VERSION。
+
+    打包后 PyInstaller 的 __file__ 在临时解包目录里，读不到 package.json，
+    所以优先用环境变量（electron/main.js 用 app.getVersion() 注入）。
+    """
+    env_ver = os.environ.get('PPTNEST_APP_VERSION', '').strip()
+    if env_ver:
+        return env_ver
     try:
         import json as _json
         pkg = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'package.json')
